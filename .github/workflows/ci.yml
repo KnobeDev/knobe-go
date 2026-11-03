@@ -1,0 +1,39 @@
+# Parity gate: runs the full test suite against the CURRENT upstream protocol
+# (main), so any upstream change that breaks lens.py parity fails here
+# immediately. A weekly run catches upstream changes between pushes.
+name: parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: KnobeOne/knobe-protocol
+          path: knobe-protocol
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
+        env:
+          KNOBE_PROTOCOL_DIR: ${{ github.workspace }}/knobe-protocol
