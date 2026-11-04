@@ -2,6 +2,8 @@
 
 A KNOBE verifier for Go: an independent verifier for **KNOBE Protocol v1** `.knobe.md` files, written as a sibling of the reference verifier `lens.py` in [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol).
 
+The current release is v0.1.0, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go).
+
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
 
 ## What it does and does not do
@@ -15,6 +17,8 @@ Requires Go 1.22 or later.
 ```bash
 go install github.com/KnobeDev/knobe-go/cmd/knobe-verify@latest
 ```
+
+To install exactly this release rather than the newest one, use `@v0.1.0` in place of `@latest`.
 
 ```bash
 knobe-verify path/to/file.knobe.md
@@ -32,7 +36,11 @@ The human report and the `--json` document have the same layout and keys as `pyt
 | 1 | Integrity holds but conformance is `invalid`, or status is `failed` |
 | 2 | `unreadable`, or a usage or file error |
 
-As a library:
+### As a library
+
+```bash
+go get github.com/KnobeDev/knobe-go@v0.1.0
+```
 
 ```go
 import knobe "github.com/KnobeDev/knobe-go"
@@ -40,6 +48,8 @@ import knobe "github.com/KnobeDev/knobe-go"
 r := knobe.VerifyFile("file.knobe.md") // or knobe.VerifyBytes(data)
 fmt.Println(r.Status, r.BodyVerified, r.Conformance, r.ConformanceIssues)
 ```
+
+The full API is on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go).
 
 ## Test vector results
 
@@ -113,7 +123,7 @@ The human report escapes more than `lens.py` does. It also escapes control chara
 
 knobe-go is maintained by Joshua Hori (KnobeDev). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
 
-It was written with AI assistance (Claude) at the maintainer's direction. As the steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) ask, the reliance on the reference engines is disclosed here: `lens.py` was consulted throughout, along with the maintainer's Rust port, knobe-rs, which follows the same reference. Every ambiguous case was settled by observing `lens.py` and is pinned by the parity tests above.
+It was written with AI assistance (Claude) at the maintainer's direction. As the steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) ask, the reliance on the reference engines is disclosed here: `lens.py` was consulted throughout, along with the maintainer's Rust port, [knobe-rs](https://github.com/KnobeDev/knobe-rs) (on crates.io as [`knobe`](https://crates.io/crates/knobe)), which follows the same reference. Every ambiguous case was settled by observing `lens.py` and is pinned by the parity tests above.
 
 ## License
 
