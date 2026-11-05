@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 )
 
@@ -113,20 +111,16 @@ const MaxFileSize = 64 << 20
 
 // VerifyFile reads and verifies a .knobe.md file of at most MaxFileSize
 // bytes. It never panics on file contents; read errors are reported as
-// unreadable.
+// unreadable, worded as lens.py words them. The path in a reason is shown
+// as Python shows a command-line path: escaped with SafeString, with each
+// byte that is not valid UTF-8 as \udcXX.
 func VerifyFile(path string) Report {
 	data, err := readLimited(path)
 	if errors.Is(err, errTooLarge) {
-		return unreadable(fmt.Sprintf("file exceeds the %d MiB size limit: %s", MaxFileSize>>20, path), 0, nil)
+		return unreadable(fmt.Sprintf("file exceeds the %d MiB size limit: %s", MaxFileSize>>20, safePath(path)), 0, nil)
 	}
 	if err != nil {
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return unreadable("file not found: "+path, 0, nil)
-		case errors.Is(err, syscall.EISDIR):
-			return unreadable("path is a directory, not a file: "+path, 0, nil)
-		}
-		return unreadable(fmt.Sprintf("could not read file: %v", err), 0, nil)
+		return unreadable(readErrorReason(path, err), 0, nil)
 	}
 	return VerifyBytes(data)
 }
@@ -152,8 +146,8 @@ func readLimited(path string) ([]byte, error) {
 // VerifyBytes verifies the contents of a .knobe.md file. Callers passing
 // untrusted input should bound its size, as VerifyFile does.
 func VerifyBytes(data []byte) Report {
-	if !utf8.Valid(data) {
-		return unreadable("file is not valid UTF-8", 0, nil)
+	if msg := utf8ErrorText(data); msg != "" {
+		return unreadable("file is not valid UTF-8: "+msg, 0, nil)
 	}
 	return verifyText(string(data))
 }

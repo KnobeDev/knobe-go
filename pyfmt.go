@@ -124,35 +124,42 @@ func truthy(v Value) bool {
 	return len(v.Obj) > 0
 }
 
-// pyPrintable approximates Python str.isprintable() for repr(). It only
-// shapes message text; nothing is hashed or gated on it.
+// pyPrintable is Python str.isprintable() for one code point: false for
+// categories Cc, Cf, Cs, Co, Cn (unassigned), Zl, Zp and Zs other than the
+// space. Python 3.13 uses Unicode 15.1 and Go 1.22 Unicode 15.0; the code
+// points 15.1 added are counted as assigned here.
 func pyPrintable(r rune) bool {
 	switch {
-	case r <= 0x1F, r >= 0x7F && r <= 0xA0, r == 0xAD, r == 0x1680:
+	case r == ' ':
+		return true
+	case r >= 0xD800 && r <= 0xDFFF:
 		return false
-	case r >= 0x2000 && r <= 0x200F, r >= 0x2028 && r <= 0x202F, r >= 0x205F && r <= 0x2064:
-		return false
-	case r == 0x3000, r >= 0xD800 && r <= 0xDFFF, isFormatControl(r):
+	case unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Zs, unicode.Zl, unicode.Zp):
 		return false
 	}
-	return true
+	return unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S) || addedInUnicode151(r)
 }
 
-// isFormatControl reports Unicode category Cf (bidi overrides and isolates,
-// zero-width characters, U+FEFF) and the line/paragraph separators.
-func isFormatControl(r rune) bool {
-	return unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029
+// addedInUnicode151 reports the code points Unicode 15.1 assigned: the
+// ideographic description characters U+2FFC-2FFF and U+31EF (So) and CJK
+// Extension I (Lo).
+func addedInUnicode151(r rune) bool {
+	return (r >= 0x2FFC && r <= 0x2FFF) || r == 0x31EF || (r >= 0x2EBF0 && r <= 0x2EE5D)
 }
 
 // reprStr is Python repr(str).
-func reprStr(s string) string {
+func reprStr(s string) string { return reprRunes(decodeRunes(s)) }
+
+// reprRunes is Python repr() of the string made of runes, which may include
+// lone surrogates.
+func reprRunes(rs []rune) string {
 	quote := '\''
-	if strings.ContainsRune(s, '\'') && !strings.ContainsRune(s, '"') {
+	if containsRune(rs, '\'') && !containsRune(rs, '"') {
 		quote = '"'
 	}
 	var b strings.Builder
 	b.WriteRune(quote)
-	for _, r := range decodeRunes(s) {
+	for _, r := range rs {
 		switch {
 		case r == '\\':
 			b.WriteString(`\\`)
@@ -169,12 +176,23 @@ func reprStr(s string) string {
 			b.WriteRune(r)
 		case r <= 0xFF:
 			fmt.Fprintf(&b, `\x%02x`, r)
-		default:
+		case r <= 0xFFFF:
 			fmt.Fprintf(&b, `\u%04x`, r)
+		default:
+			fmt.Fprintf(&b, `\U%08x`, r)
 		}
 	}
 	b.WriteRune(quote)
 	return b.String()
+}
+
+func containsRune(rs []rune, r rune) bool {
+	for _, x := range rs {
+		if x == r {
+			return true
+		}
+	}
+	return false
 }
 
 // pyStr is Python str() of a parsed JSON value: a string as is, anything
@@ -222,29 +240,43 @@ func repr(v Value) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-// SafeString is lens.py safe() for a string: escape C0/C1 controls and DEL as
-// \xNN so a crafted string cannot spoof the report or inject terminal escape
-// sequences, then truncate to limit code points (limit <= 0: no limit).
-// Stricter than lens.py, it also escapes bidi overrides, isolates and
-// zero-width characters (\uNNNN), which could reorder or hide report text.
-func SafeString(s string, limit int) string {
+// SafeString is lens.py safe() for a string, so a crafted string cannot
+// spoof the report, inject terminal escape sequences or visually reorder
+// text. It escapes C0 and C1 controls and DEL as \xNN; bidi embeddings,
+// overrides and isolates (U+202A-202E, U+2066-2069), the line and paragraph
+// separators (U+2028, U+2029) and unpaired surrogates as \uNNNN; and keeps
+// everything else, backslashes included. The result is then cut to limit
+// code points plus "…" (limit <= 0: no limit). An unpaired surrogate is
+// read from its WTF-8 form, as the JSON parser keeps it.
+func SafeString(s string, limit int) string { return safeRunes(decodeRunes(s), limit) }
+
+func safeRunes(rs []rune, limit int) string {
 	var b strings.Builder
-	for _, r := range decodeRunes(s) {
+	n := 0
+	for _, r := range rs {
+		if limit > 0 && n == limit {
+			b.WriteString("…")
+			return b.String()
+		}
 		switch {
 		case r < 0x20 || r == 0x7F || (r >= 0x80 && r <= 0x9F):
 			fmt.Fprintf(&b, `\x%02x`, r)
-		case isFormatControl(r):
+			n += 4
+		case (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) ||
+			r == 0x2028 || r == 0x2029 || (r >= 0xD800 && r <= 0xDFFF):
 			fmt.Fprintf(&b, `\u%04x`, r)
+			n += 6
 		default:
 			b.WriteRune(r)
+			n++
+		}
+		if limit > 0 && n > limit {
+			// The escape crossed the limit: keep its first code points only.
+			out := []rune(b.String())
+			return string(out[:limit]) + "…"
 		}
 	}
-	out := b.String()
-	if limit > 0 && utf8.RuneCountInString(out) > limit {
-		runes := []rune(out)
-		out = string(runes[:limit]) + "…"
-	}
-	return out
+	return b.String()
 }
 
 // safe is lens.py safe() for any value: strings escaped and truncated,

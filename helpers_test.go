@@ -6,50 +6,35 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
+
+	"github.com/KnobeDev/knobe-go/internal/lenstest"
 )
 
 // protocolDir is the KNOBE Protocol checkout holding lens.py and the test
 // vectors. Override with KNOBE_PROTOCOL_DIR (default: ../knobe-protocol).
 func protocolDir(t *testing.T) string {
 	t.Helper()
-	dir := os.Getenv("KNOBE_PROTOCOL_DIR")
-	if dir == "" {
-		dir = filepath.Join("..", "knobe-protocol")
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(abs, "lens.py")); err != nil {
-		t.Fatalf("KNOBE protocol checkout not found at %s (set KNOBE_PROTOCOL_DIR)", abs)
-	}
-	return abs
+	return lenstest.ProtocolDir(t)
 }
 
 // requirePython skips a differential test when python3 is unavailable.
 func requirePython(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not found; differential tests against lens.py skipped")
-	}
+	lenstest.RequirePython(t)
 }
 
 // pythonVersion is python3's "major.minor".
-var pythonVersion = sync.OnceValue(func() string {
-	out, err := exec.Command("python3", "-c", "import sys; print('%d.%d' % sys.version_info[:2])").Output()
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(string(out))
-})
+var pythonVersion = lenstest.PythonVersion
 
 // cpython313Only are hostile cases whose lens.py report depends on CPython
-// 3.13's json.loads recursion limit (3.12 stops one level earlier). CI runs
+// 3.13's json.loads recursion limits (3.12 stops one level earlier). CI runs
 // Python 3.13; elsewhere these cases are skipped, with a note.
 var cpython313Only = map[string]bool{
 	"deep-nesting-9997": true, "deep-nesting-9998": true, "deep-nesting-9998-then-dup-key": true,
+	"deep-object-9995": true, "deep-object-9996": true, "deep-object-9996-dup-key": true,
+	"deep-float-9995": true, "deep-float-9996": true, "deep-overflow-float-9996": true,
+	"deep-nan-9995": true, "deep-nan-9996": true, "deep-int-9998": true,
 }
 
 func skipOnThisPython(t *testing.T, name string) bool {

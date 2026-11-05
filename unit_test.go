@@ -346,18 +346,6 @@ func TestVerifyIsTotalOnGarbage(t *testing.T) {
 	}
 }
 
-func TestSafeStringEscapesBidiAndFormatControls(t *testing.T) {
-	in := "safe" + string(rune(0x202E)) + "evil" + string(rune(0x2066)) + "x" +
-		string(rune(0x200B)) + string(rune(0xFEFF)) + string(rune(0x2028))
-	if got, want := SafeString(in, 0), `safe\u202eevil\u2066x\u200b\ufeff\u2028`; got != want {
-		t.Errorf("got %s want %s", got, want)
-	}
-	in = "a" + string(rune(0x2067)) + "b" + string(rune(0x061C)) + "c"
-	if got, want := reprStr(in), `'a\u2067b\u061cc'`; got != want {
-		t.Errorf("reprStr must escape Cf characters: got %s want %s", got, want)
-	}
-}
-
 func TestVerifyFileBoundsInputSize(t *testing.T) {
 	dir := t.TempDir()
 	big := dir + "/big.knobe.md"

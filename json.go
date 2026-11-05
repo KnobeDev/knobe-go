@@ -82,13 +82,23 @@ func (e *ParseError) Error() string {
 	}
 }
 
-// maxDepth is how deep containers may nest below the top-level value, as
-// CPython 3.13's json.loads allows (its C recursion limit): one level deeper
-// raises RecursionError, which lens.py reports as "payload could not be
-// decoded or parsed". Scalars do not count. It also bounds this parser's
-// recursion. The verifier rejects much shallower payloads later, as lens.py
-// does (see maxScanLevel).
+// maxDepth is how deep an array may nest below the top-level value (level
+// 0), as CPython 3.13's json.loads allows (its C recursion limit): one level
+// deeper raises RecursionError, which lens.py reports as "payload could not
+// be decoded or parsed". It also bounds this parser's recursion. The
+// verifier rejects much shallower payloads later, as lens.py does (see
+// maxScanLevel).
 const maxDepth = 9997
+
+// maxHookDepth is the deepest level at which json.loads can still call one
+// of lens.py's Python hooks: object_pairs_hook for an object, parse_float
+// for a float, parse_constant for NaN/Infinity/-Infinity. Each call needs
+// stack room the C scanner has already used up below this, so such a node
+// one level deeper fails with RecursionError (measured through lens.py on
+// CPython 3.13). Integers, strings, true, false and null call no hook and
+// are limited only by their container. The error is raised where the node
+// starts; anything inside it would fail the same way.
+const maxHookDepth = 9995
 
 // maxIntDigits is CPython's default int max_str_digits: json.loads refuses a
 // longer integer literal, so lens.py reports such a payload unreadable.
@@ -158,6 +168,9 @@ func (p *parser) eat(lit string) bool {
 func (p *parser) value(depth int) (Value, error) {
 	p.ws()
 	rest := p.s[p.i:]
+	if depth > maxHookDepth && (strings.HasPrefix(rest, "{") || startsFloat(rest)) {
+		return Value{}, p.err("nesting too deep")
+	}
 	if strings.HasPrefix(rest, "NaN") || strings.HasPrefix(rest, "Infinity") || strings.HasPrefix(rest, "-Infinity") {
 		return Value{}, &ParseError{NonJSONConst: true}
 	}
@@ -186,9 +199,6 @@ func (p *parser) value(depth int) (Value, error) {
 }
 
 func (p *parser) object(depth int) (Value, error) {
-	if depth > maxDepth {
-		return Value{}, p.err("nesting too deep")
-	}
 	p.i++
 	out := Value{Kind: Object, Obj: []Member{}}
 	// A map keeps duplicate detection linear on hostile input. Python reports
@@ -271,6 +281,25 @@ func (p *parser) array(depth int) (Value, error) {
 			return Value{}, p.err("expected ',' or ']'")
 		}
 	}
+}
+
+// startsFloat reports whether s starts with a token json.loads hands to a
+// Python hook as a float or constant: NaN, Infinity, -Infinity, or a number
+// with a fraction or exponent.
+func startsFloat(s string) bool {
+	if strings.HasPrefix(s, "NaN") || strings.HasPrefix(s, "Infinity") || strings.HasPrefix(s, "-Infinity") {
+		return true
+	}
+	s = strings.TrimPrefix(s, "-")
+	if s == "" || s[0] < '0' || s[0] > '9' {
+		return false
+	}
+	if s[0] == '0' {
+		s = s[1:]
+	} else {
+		s = strings.TrimLeft(s, "0123456789")
+	}
+	return strings.HasPrefix(s, ".") || strings.HasPrefix(s, "e") || strings.HasPrefix(s, "E")
 }
 
 func (p *parser) hex4() (rune, error) {

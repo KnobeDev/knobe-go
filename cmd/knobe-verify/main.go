@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	knobe "github.com/KnobeDev/knobe-go"
@@ -33,12 +34,12 @@ A match proves integrity, not truth. A valid result proves conformance, not
 truth. Inspect before trusting.`
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(args []string) int {
+func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
-		fmt.Println(help)
+		fmt.Fprintln(stdout, help)
 		return 0
 	}
 	asJSON := false
@@ -46,14 +47,14 @@ func run(args []string) int {
 		asJSON, args = true, args[1:]
 	}
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, usage)
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	r := verifySafely(knobe.VerifyFile, args[0])
+	r := verifySafely(knobe.VerifyFile, args[0], stderr)
 	if asJSON {
-		fmt.Println(r.JSON())
+		fmt.Fprintln(stdout, r.JSON())
 	} else {
-		r.WriteHuman(os.Stdout)
+		r.WriteHuman(stdout)
 	}
 	return r.ExitCode()
 }
@@ -65,10 +66,10 @@ const panicReason = "verifier error (panic); rejected"
 // reported the way lens.py reports an exception from verify(): unreadable,
 // with no blocks and no payload. The panic value goes to stderr, escaped,
 // for a bug report.
-func verifySafely(verify func(string) knobe.Report, path string) (r knobe.Report) {
+func verifySafely(verify func(string) knobe.Report, path string, stderr io.Writer) (r knobe.Report) {
 	defer func() {
 		if v := recover(); v != nil {
-			fmt.Fprintln(os.Stderr, "knobe-verify: internal error:", knobe.SafeString(fmt.Sprint(v), 300))
+			fmt.Fprintln(stderr, "knobe-verify: internal error:", knobe.SafeString(fmt.Sprint(v), 300))
 			r = knobe.Report{
 				Status:            knobe.Unreadable,
 				Conformance:       knobe.Invalid,

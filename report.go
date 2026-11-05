@@ -55,23 +55,24 @@ func (r Report) WriteHuman(w io.Writer) {
 		issues()
 		return
 	}
-	field := func(k string) string {
-		v, ok := r.Payload.Get(k)
-		if !ok {
-			return "None"
-		}
-		return safe(v)
+	// lens.py: title as safe(v); the other fields as safe(str(v)), where
+	// str() of a non-string is its repr() and an absent field is None.
+	title := "None"
+	if v, ok := r.Payload.Get("title"); ok {
+		title = safe(v)
 	}
-	line("title", field("title"))
+	field := func(k string) string {
+		if v, ok := r.Payload.Get(k); ok {
+			return SafeString(pyStr(v), 300)
+		}
+		return "None"
+	}
+	line("title", title)
 	line("spec_version", field("spec_version"))
 	line("quarantine_status", field("quarantine_status"))
 	line("privacy_level", field("privacy_level"))
 	line("computed_hash", r.Computed)
-	stored := repr(*r.Stored)
-	if s, ok := r.Stored.Str(); ok {
-		stored = SafeString(s, 0) // lens.py prints str(stored) whole; we escape it
-	}
-	line("stored_hash", stored)
+	line("stored_hash", SafeString(pyStr(*r.Stored), 300))
 	line("status", string(r.Status))
 	if r.MultipleBlocks() {
 		line("WARNING", fmt.Sprintf("multiple payload blocks present. Evaluated block %d of %d per spec §3.3.",

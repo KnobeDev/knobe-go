@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/KnobeDev/knobe-go/internal/lenstest"
 )
 
 // Differential parity with the reference verifier: for every published file
@@ -323,10 +326,92 @@ func hostileCases(t *testing.T) []hostileCase {
 		hostileCase{"deep-nesting-9997", k(fm, "", obj(`"x":`+nest(9997, "")))},
 		hostileCase{"deep-nesting-9998", k(fm, "", obj(`"x":`+nest(9998, "")))},
 		hostileCase{"deep-nesting-9998-then-dup-key", k(fm, "", obj(`"x":`+nest(9998, "")+`,"x":"1"`))},
+		// json.loads calls a Python hook for an object (object_pairs_hook),
+		// a float (parse_float) and NaN/Infinity (parse_constant); CPython
+		// 3.13 has no stack left for one below level 9995. Integers, strings
+		// and literals call none and sit as deep as their array allows.
+		hostileCase{"deep-object-9995", k(fm, "", obj(`"x":`+nest(9994, "{}")))},
+		hostileCase{"deep-object-9996", k(fm, "", obj(`"x":`+nest(9995, "{}")))},
+		hostileCase{"deep-object-9996-dup-key", k(fm, "", nest(9996, `{"a":1,"a":2}`))},
+		hostileCase{"deep-float-9995", k(fm, "", obj(`"x":`+nest(9994, "1.5")))},
+		hostileCase{"deep-float-9996", k(fm, "", obj(`"x":`+nest(9995, "1.5")))},
+		hostileCase{"deep-overflow-float-9996", k(fm, "", obj(`"x":`+nest(9995, "1e400")))},
+		hostileCase{"deep-nan-9995", k(fm, "", obj(`"x":`+nest(9994, "NaN")))},
+		hostileCase{"deep-nan-9996", k(fm, "", obj(`"x":`+nest(9995, "-Infinity")))},
+		hostileCase{"deep-int-9998", k(fm, "", obj(`"x":`+nest(9997, "0")))},
+		// Distinct keys stay distinct: two different lone surrogates, or a
+		// lone surrogate and a real U+FFFD, are no duplicate.
+		hostileCase{"lone-surrogate-distinct-keys", k(fm, "", obj(`"\ud800":"1","\udc00":"2"`))},
+		hostileCase{"lone-surrogate-and-fffd-keys", k(fm, "", obj(`"\ud800":"1","\ufffd":"2"`))},
+		hostileCase{"lone-surrogate-and-literal-fffd-keys", k(fm, "", obj("\"\\udfff\":\"1\",\"\uFFFD\":\"2\""))},
 		hostileCase{"file-not-utf8", append([]byte(fm), 0xc3, 0x28)},
+		hostileCase{"file-not-utf8-truncated", append([]byte(fm), 0xf0, 0x9f, 0x98)},
+		hostileCase{"file-not-utf8-encoded-surrogate", append([]byte(fm), 0xed, 0xa0, 0x80, 'x')},
+		hostileCase{"file-not-utf8-two-bytes", append([]byte(fm+"x"), 0xe2, 0x82, '(')},
 		hostileCase{"file-empty", []byte{}},
 	)
-	return cases
+	return append(cases, displayCases(t)...)
+}
+
+// displayCases exercise how reasons and the human report show hostile text
+// (lens.py safe()): C0/C1 controls, bidi controls, line separators and lone
+// surrogates escaped, long values cut at 300 code points.
+func displayCases(t *testing.T) []hostileCase {
+	k := func(payload string) hostileCase { return hostileCase{data: knobeFile(t, fm, "", payload)} }
+	stored := func(v string) hostileCase { return k(strings.Replace(obj(""), `"__H__"`, v, 1)) }
+	field := func(name, v string) hostileCase { return k(objWithout(name, `"`+name+`":`+v)) }
+	dup := func(key string) hostileCase { return k(`{"` + key + `":"1","` + key + `":"2"}`) }
+	long := `[` + strings.Repeat(`"xxxxxxxx",`, 39) + `"xxxxxxxx"]`
+	cases := map[string]hostileCase{
+		"dup-ansi-escape":              dup(`\u001b[31mRED`),
+		"dup-c1-control":               dup(`\u0085x`),
+		"dup-bidi-override":            dup(`a\u202eb`),
+		"dup-bidi-isolate-literal":     dup("a\u2067b\u202ac"),
+		"dup-line-separator":           dup(`a\u2028b\u2029c`),
+		"dup-surrogate-high":           dup(`\ud800`),
+		"dup-surrogate-in-text":        dup(`x\ud800y`),
+		"dup-surrogate-and-control":    dup(`\u001b\udfff`),
+		"dup-surrogate-low-nested":     k(`{"a":{"\udc00":1,"\udc00":2}}`),
+		"dup-not-escaped":              dup("zw\u200bj\u200dsh\u00adbom\ufeffback\\\\slash"),
+		"dup-long-key":                 dup(strings.Repeat("k", 400)),
+		"dup-long-key-escape-at-limit": dup(strings.Repeat("k", 298) + `\u001b\u202e`),
+		"stored-ansi":                  stored(`"\u001b[31mDEADBEEF\u001b[0m"`),
+		"stored-c1":                    stored(`"\u009b31maaaaaaaaaa"`),
+		"stored-bidi":                  stored(`"\u202e` + strings.Repeat("a", 64) + `"`),
+		"stored-line-separator":        stored(`"a\u2028b"`),
+		"stored-long-string":           stored(`"` + strings.Repeat("b", 400) + `"`),
+		"stored-list":                  stored(`["a",1]`),
+		"stored-long-list":             stored(long),
+		"stored-object-escape":         stored(`{"k":"\u001b"}`),
+		"stored-true":                  stored(`true`),
+		"stored-float":                 stored(`1e22`),
+		"title-ansi":                   field("title", `"\u001b[31mRED"`),
+		"title-bidi":                   field("title", `"a\u202eb"`),
+		"title-line-separator":         field("title", `"a\u2028b"`),
+		"title-long-string":            field("title", `"`+strings.Repeat("t", 400)+`"`),
+		"title-long-list":              field("title", long),
+		"title-missing":                k(objWithout("title", "")),
+		"privacy-bidi":                 field("privacy_level", `"a\u202eb"`),
+		"privacy-list-bidi":            field("privacy_level", `["a\u202eb"]`),
+		"privacy-long-string":          field("privacy_level", `"`+strings.Repeat("p", 400)+`"`),
+		"quarantine-missing":           k(objWithout("quarantine_status", "")),
+		"quarantine-null":              field("quarantine_status", `null`),
+		"spec-version-bidi":            field("spec_version", `"1.0\u202e"`),
+		"spec-version-line-separator":  field("spec_version", `"1.0\u2028"`),
+		"numeric-key-ansi":             k(obj(`"\u001b[31m":5`)),
+		"numeric-key-bidi":             k(obj(`"a\u202eb":[1]`)),
+		"vocab-custom-ansi":            field("content_type", `"x\u001by"`),
+	}
+	names := make([]string, 0, len(cases))
+	for name := range cases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]hostileCase, len(names))
+	for i, name := range names {
+		out[i] = hostileCase{name, cases[name].data}
+	}
+	return out
 }
 
 // nest wraps inner in n JSON arrays.
@@ -350,6 +435,7 @@ func flipTrailingBits(b string) string {
 func TestHostileBatteryMatchesLens(t *testing.T) {
 	requirePython(t)
 	protocolDir(t)
+	lenstest.LogMode(t)
 	dir := t.TempDir()
 	cases := hostileCases(t)
 	t.Logf("python3 is %s", pythonVersion())
@@ -358,16 +444,19 @@ func TestHostileBatteryMatchesLens(t *testing.T) {
 		if skipOnThisPython(t, c.name) {
 			continue
 		}
-		compared++
 		path := filepath.Join(dir, c.name+".knobe.md")
 		if err := os.WriteFile(path, c.data, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		py, ok := lens(t, path)
 		if !ok {
+			if pendingJSON[c.name] != "" && !lenstest.DisplayPatched(t) {
+				continue // lens.py crashes printing this report; see pendingJSON
+			}
 			t.Errorf("%s: lens.py produced no JSON report", c.name)
 			continue
 		}
+		compared++
 		if got := ours(t, path); got != py {
 			t.Errorf("%s\n  lens: %+v\n  ours: %+v", c.name, py, got)
 		}
@@ -375,22 +464,65 @@ func TestHostileBatteryMatchesLens(t *testing.T) {
 	t.Logf("compared %d of %d hostile cases", compared, len(cases))
 }
 
-// fullJSONExceptions are files whose complete --json output differs from
-// lens.py by design, with the reason.
-var fullJSONExceptions = map[string]string{
-	// lens.py appends Python's codec error ("'utf-8' codec can't decode byte
-	// 0xc3 in position 39: ..."); knobe-go reports the fact without the detail.
-	"file-not-utf8": "reason text",
+// Reasons for the listed differences from a lens.py without the display
+// patch (lenstest.DisplayPatch).
+const (
+	pendingEscapes   = lenstest.DisplayPatch + ": safe() escapes bidi controls (U+202A-202E, U+2066-2069) and U+2028/U+2029"
+	pendingSurrogate = lenstest.DisplayPatch + ": safe() escapes a lone surrogate (unpatched lens.py crashes printing it)"
+	pendingIssues    = lenstest.DisplayPatch + ": conformance issues are printed through safe()"
+	pendingStored    = lenstest.DisplayPatch + ": stored_hash is printed as safe(str(stored)), escaped and cut at 300"
+)
+
+// pendingJSON lists the files whose --json output differs from a lens.py
+// without the display patch, and why.
+var pendingJSON = map[string]string{
+	"dup-bidi-override":           pendingEscapes,
+	"dup-bidi-isolate-literal":    pendingEscapes,
+	"dup-line-separator":          pendingEscapes,
+	"spec-version-bidi":           pendingEscapes,
+	"spec-version-line-separator": pendingEscapes,
+	"dup-surrogate-high":          pendingSurrogate,
+	"dup-surrogate-in-text":       pendingSurrogate,
+	"dup-surrogate-and-control":   pendingSurrogate,
+	"dup-surrogate-low-nested":    pendingSurrogate,
 }
 
-// The gate fields above are what upstream's harness compares. This goes
-// further: the complete --json document, including every conformance issue
-// and the unreadable reason, must be byte-identical to lens.py's, so a
-// change to upstream's wording or check order fails here too.
-func TestFullJSONMatchesLens(t *testing.T) {
-	requirePython(t)
-	dir := t.TempDir()
-	var files []string
+// pendingHuman lists the files whose human report differs from a lens.py
+// without the display patch, and why.
+var pendingHuman = map[string]string{
+	"dup-bidi-override":             pendingEscapes,
+	"dup-bidi-isolate-literal":      pendingEscapes,
+	"dup-line-separator":            pendingEscapes,
+	"spec-version-bidi":             pendingEscapes,
+	"spec-version-line-separator":   pendingEscapes,
+	"title-bidi":                    pendingEscapes,
+	"title-line-separator":          pendingEscapes,
+	"privacy-bidi":                  pendingEscapes,
+	"dup-surrogate-high":            pendingSurrogate,
+	"dup-surrogate-in-text":         pendingSurrogate,
+	"dup-surrogate-and-control":     pendingSurrogate,
+	"dup-surrogate-low-nested":      pendingSurrogate,
+	"numeric-key-ansi":              pendingIssues,
+	"numeric-key-bidi":              pendingIssues,
+	"stored-ansi":                   pendingStored,
+	"stored-c1":                     pendingStored,
+	"stored-bidi":                   pendingStored,
+	"stored-line-separator":         pendingStored,
+	"stored-long-string":            pendingStored,
+	"stored-long-list":              pendingStored,
+	"payload-hash-trailing-newline": pendingStored,
+}
+
+// byDesign lists files whose output differs from lens.py by design, with
+// the reason. There are none: knobe-go prints what lens.py prints.
+var byDesign = map[string]string{}
+
+type parityFile struct{ name, path string }
+
+// parityFiles writes the hostile battery to dir and adds every published
+// file (named by its path in the protocol checkout).
+func parityFiles(t *testing.T, dir string) []parityFile {
+	var files []parityFile
 	for _, c := range hostileCases(t) {
 		if skipOnThisPython(t, c.name) {
 			continue
@@ -399,33 +531,48 @@ func TestFullJSONMatchesLens(t *testing.T) {
 		if err := os.WriteFile(path, c.data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		files = append(files, path)
+		files = append(files, parityFile{c.name, path})
 	}
-	files = append(files, corpus(t)...)
+	for _, f := range corpus(t) {
+		rel, _ := filepath.Rel(protocolDir(t), f)
+		files = append(files, parityFile{rel, f})
+	}
+	return files
+}
+
+// The gate fields above are what upstream's harness compares. This goes
+// further: the complete --json document, including every conformance issue
+// and the unreadable reason, must be byte-identical to lens.py's, so a
+// change to upstream's wording or check order fails here too.
+func TestFullJSONMatchesLens(t *testing.T) {
+	requirePython(t)
+	lenstest.LogMode(t)
+	files := parityFiles(t, t.TempDir())
 	for _, f := range files {
-		name := strings.TrimSuffix(filepath.Base(f), ".knobe.md")
-		out, _ := exec.Command("python3", filepath.Join(protocolDir(t), "lens.py"), "--json", f).Output()
-		want, got := strings.TrimSuffix(string(out), "\n"), VerifyFile(f).JSON()
-		_, excepted := fullJSONExceptions[name]
-		if (want == got) == excepted {
-			t.Errorf("%s (exception listed: %v)\n--- lens.py\n%s\n--- ours\n%s", name, excepted, want, got)
-		}
+		out, _ := lenstest.Lens(t, "--json", f.path)
+		want, got := strings.TrimSuffix(out, "\n"), VerifyFile(f.path).JSON()
+		lenstest.Compare(t, f.name, want, got, lenstest.Expect{ByDesign: byDesign[f.name], Pending: pendingJSON[f.name]})
 	}
 	t.Logf("compared %d files", len(files))
 }
 
-// On the published files (which carry no crafted escapes) the human report
-// is byte-identical to lens.py's too.
-func TestHumanOutputMatchesLensOnPublishedFiles(t *testing.T) {
+// The human report must be byte-identical to lens.py's too, on the same
+// files, exit code included.
+func TestHumanOutputMatchesLens(t *testing.T) {
 	requirePython(t)
-	for _, f := range corpus(t) {
-		out, _ := exec.Command("python3", filepath.Join(protocolDir(t), "lens.py"), f).Output()
+	lenstest.LogMode(t)
+	files := parityFiles(t, t.TempDir())
+	for _, f := range files {
+		want, wantExit := lenstest.Lens(t, f.path)
+		r := VerifyFile(f.path)
 		var b strings.Builder
-		VerifyFile(f).WriteHuman(&b)
-		if string(out) != b.String() {
-			t.Errorf("%s\n--- lens.py\n%s--- ours\n%s", f, out, b.String())
+		r.WriteHuman(&b)
+		e := lenstest.Expect{ByDesign: byDesign[f.name], Pending: pendingHuman[f.name]}
+		if lenstest.Compare(t, f.name, want, b.String(), e) && want == b.String() && wantExit != r.ExitCode() {
+			t.Errorf("%s: exit code %d, lens.py %d", f.name, r.ExitCode(), wantExit)
 		}
 	}
+	t.Logf("compared %d files", len(files))
 }
 
 // Sanity check that the battery exercises every status.
