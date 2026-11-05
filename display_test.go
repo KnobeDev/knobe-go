@@ -250,7 +250,9 @@ func TestParserDepthFollowsCPython313(t *testing.T) {
 		want  string // "", "syntax", "nonconst", "dup"
 	}{
 		{9995, "{}", ""}, {9996, "{}", "syntax"},
-		{9995, `{"a":1,"a":2}`, "dup"}, {9996, `{"a":1,"a":2}`, "syntax"},
+		{9994, `{"a":1,"a":2}`, "dup"}, {9995, `{"a":1,"a":2}`, "syntax"}, {9996, `{"a":1,"a":2}`, "syntax"},
+		{9994, `{"a":{"b":1},"a":2}`, "dup"}, {9995, `{"a":1,"a":2},NaN`, "syntax"},
+		{9995, `{"a":1,"a":2,}`, "syntax"}, {9995, `{"a":1,"b":2}`, ""},
 		{9995, "1.5", ""}, {9996, "1.5", "syntax"}, {9996, "-0e1", "syntax"},
 		{9995, "1e400", "nonconst"}, {9996, "1e400", "syntax"},
 		{9995, "NaN", "nonconst"}, {9996, "NaN", "syntax"}, {9996, "-Infinity", "syntax"},
@@ -271,5 +273,13 @@ func TestParserDepthFollowsCPython313(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s at level %d: got %q, want %q (%v)", c.node, c.level, got, c.want, err)
 		}
+	}
+	// The duplicate-key limit is the same when the object sits in objects.
+	chain := func(n int, inner string) string { return strings.Repeat(`{"k":`, n) + inner + strings.Repeat("}", n) }
+	if _, err := ParseJSON(chain(9994, `{"a":1,"a":2}`)); !errors.As(err, &pe) || !pe.IsDuplicate {
+		t.Errorf("duplicate key at level 9994 in objects: got %v, want the duplicate", err)
+	}
+	if _, err := ParseJSON(chain(9995, `{"a":1,"a":2}`)); err == nil || (errors.As(err, &pe) && (pe.IsDuplicate || pe.NonJSONConst)) {
+		t.Errorf("duplicate key at level 9995 in objects: got %v, want a parse error", err)
 	}
 }

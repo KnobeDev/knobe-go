@@ -100,6 +100,17 @@ const maxDepth = 9997
 // starts; anything inside it would fail the same way.
 const maxHookDepth = 9995
 
+// maxDupHookDepth is the deepest level at which lens.py can still report an
+// object's duplicate key, one level above maxHookDepth: when
+// object_pairs_hook raises DuplicateKeyError at level maxHookDepth, the
+// payload is "payload could not be decoded or parsed" instead (measured
+// through lens.py on CPython 3.13, whether the object sits in arrays,
+// objects or both, and whatever its size). At maxHookDepth an object
+// without a duplicate still parses, and parse_float or parse_constant
+// still reports NonJSONConstantError. The hook runs at the closing brace,
+// so that is where the error is raised.
+const maxDupHookDepth = maxHookDepth - 1
+
 // maxIntDigits is CPython's default int max_str_digits: json.loads refuses a
 // longer integer literal, so lens.py reports such a payload unreadable.
 const maxIntDigits = 4300
@@ -242,6 +253,11 @@ func (p *parser) object(depth int) (Value, error) {
 			p.i++
 		case '}':
 			p.i++
+			if hasDup && depth > maxDupHookDepth {
+				// json.loads runs the hook here, at the closing brace,
+				// and has no stack left for it to raise.
+				return Value{}, p.err("nesting too deep")
+			}
 			if hasDup {
 				return Value{}, &ParseError{IsDuplicate: true, DuplicateKey: dup}
 			}

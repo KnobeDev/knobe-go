@@ -35,6 +35,8 @@ var cpython313Only = map[string]bool{
 	"deep-object-9995": true, "deep-object-9996": true, "deep-object-9996-dup-key": true,
 	"deep-float-9995": true, "deep-float-9996": true, "deep-overflow-float-9996": true,
 	"deep-nan-9995": true, "deep-nan-9996": true, "deep-int-9998": true,
+	"deep-object-9994-dup-key": true, "deep-object-9995-dup-key": true, "deep-object-chain-9995-dup-key": true,
+	"deep-object-9995-dup-key-then-nan": true, "deep-object-9994-dup-key-holding-9995": true,
 }
 
 func skipOnThisPython(t *testing.T, name string) bool {

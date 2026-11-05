@@ -333,6 +333,15 @@ func hostileCases(t *testing.T) []hostileCase {
 		hostileCase{"deep-object-9995", k(fm, "", obj(`"x":`+nest(9994, "{}")))},
 		hostileCase{"deep-object-9996", k(fm, "", obj(`"x":`+nest(9995, "{}")))},
 		hostileCase{"deep-object-9996-dup-key", k(fm, "", nest(9996, `{"a":1,"a":2}`))},
+		// When object_pairs_hook raises DuplicateKeyError, the limit is one
+		// level lower: lens.py reports a duplicate key at level 9994, but
+		// at 9995 the payload cannot be parsed, however the object is
+		// reached.
+		hostileCase{"deep-object-9994-dup-key", k(fm, "", nest(9994, `{"a":1,"a":2}`))},
+		hostileCase{"deep-object-9995-dup-key", k(fm, "", nest(9995, `{"a":1,"a":2}`))},
+		hostileCase{"deep-object-chain-9995-dup-key", k(fm, "", strings.Repeat(`{"k":`, 9995)+`{"a":1,"a":2}`+strings.Repeat("}", 9995))},
+		hostileCase{"deep-object-9995-dup-key-then-nan", k(fm, "", nest(9995, `{"a":1,"a":2},NaN`))},
+		hostileCase{"deep-object-9994-dup-key-holding-9995", k(fm, "", nest(9994, `{"a":{"b":1},"a":2}`))},
 		hostileCase{"deep-float-9995", k(fm, "", obj(`"x":`+nest(9994, "1.5")))},
 		hostileCase{"deep-float-9996", k(fm, "", obj(`"x":`+nest(9995, "1.5")))},
 		hostileCase{"deep-overflow-float-9996", k(fm, "", obj(`"x":`+nest(9995, "1e400")))},
