@@ -1,20 +1,20 @@
 package knobe
 
 // decodeBlock decodes a payload block as lens.py does:
-// base64.b64decode("".join(block.split()), validate=True). Python whitespace
-// is removed first; what remains must be strict, padded standard Base64
-// (RFC 4648 §4; ERRATA E7). Like CPython, non-zero unused trailing bits are
-// accepted. ok is false when the block is not decodable.
+// base64.b64decode(re.sub(r"[ \t\r\n]", "", block), validate=True). Only ASCII
+// space, tab, CR and LF are removed (ERRATA E12); any other character,
+// including other whitespace, stays and makes the block invalid. What remains
+// must be strict, padded standard Base64 (RFC 4648 §4; ERRATA E7). Like
+// CPython, non-zero unused trailing bits are accepted. ok is false when the
+// block is not decodable.
 func decodeBlock(block string) ([]byte, bool) {
 	clean := make([]byte, 0, len(block))
-	for _, r := range block {
-		if isPySpace(r) {
-			continue
+	for i := 0; i < len(block); i++ {
+		switch c := block[i]; c {
+		case ' ', '\t', '\r', '\n':
+		default:
+			clean = append(clean, c) // a non-alphabet byte fails sextet below
 		}
-		if r >= 0x80 {
-			return nil, false
-		}
-		clean = append(clean, byte(r))
 	}
 	if len(clean)%4 != 0 {
 		return nil, false

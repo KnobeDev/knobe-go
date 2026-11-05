@@ -2,6 +2,7 @@ package knobe
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -81,28 +82,32 @@ func (e *ParseError) Error() string {
 	}
 }
 
-// maxDepth bounds nesting so hostile input fails cleanly (the verifier then
-// reports the file unreadable). 996 is the deepest nesting lens.py reports
-// on: a payload {"x":[[...]]} with 996 nested arrays verifies there, and one
-// more level exhausts CPython's recursion limit inside lens.py's
-// conformance helpers, which crash instead of producing a report.
-const maxDepth = 996
+// maxDepth is how deep containers may nest below the top-level value, as
+// CPython 3.13's json.loads allows (its C recursion limit): one level deeper
+// raises RecursionError, which lens.py reports as "payload could not be
+// decoded or parsed". Scalars do not count. It also bounds this parser's
+// recursion. The verifier rejects much shallower payloads later, as lens.py
+// does (see maxScanLevel).
+const maxDepth = 9997
 
 // maxIntDigits is CPython's default int max_str_digits: json.loads refuses a
 // longer integer literal, so lens.py reports such a payload unreadable.
 const maxIntDigits = 4300
 
 // ParseResult carries the parsed value plus a flag for unpaired UTF-16
-// surrogate escapes. Python accepts those while parsing but cannot
-// UTF-8-encode them, so the verifier rejects the payload after its
-// structural checks, as lens.py does.
+// surrogate escapes anywhere in it. Python accepts those while parsing but
+// cannot UTF-8-encode them. The flag is for callers: the verifier does not
+// consult it, but finds them with its own walk, which (like lens.py's) stops
+// at the first surrogate or at a nesting depth lens.py cannot reach.
 type ParseResult struct {
 	Value         Value
 	LoneSurrogate bool
 }
 
-// ParseJSON parses one strict RFC 8259 document. Duplicate keys at any depth
-// and NaN/Infinity are errors. Only JSON whitespace may surround the value.
+// ParseJSON parses one strict RFC 8259 document. Duplicate keys at any depth,
+// NaN/Infinity and numbers that overflow to infinity are errors. Only JSON
+// whitespace may surround the value. Errors are reported in the order
+// Python's json.loads with lens.py's hooks raises them.
 func ParseJSON(text string) (ParseResult, error) {
 	p := &parser{s: text}
 	v, err := p.value(0)
@@ -151,9 +156,6 @@ func (p *parser) eat(lit string) bool {
 }
 
 func (p *parser) value(depth int) (Value, error) {
-	if depth > maxDepth {
-		return Value{}, p.err("nesting too deep")
-	}
 	p.ws()
 	rest := p.s[p.i:]
 	if strings.HasPrefix(rest, "NaN") || strings.HasPrefix(rest, "Infinity") || strings.HasPrefix(rest, "-Infinity") {
@@ -184,10 +186,17 @@ func (p *parser) value(depth int) (Value, error) {
 }
 
 func (p *parser) object(depth int) (Value, error) {
+	if depth > maxDepth {
+		return Value{}, p.err("nesting too deep")
+	}
 	p.i++
 	out := Value{Kind: Object, Obj: []Member{}}
-	// A map keeps duplicate detection linear on hostile input.
+	// A map keeps duplicate detection linear on hostile input. Python reports
+	// a duplicate only once the object is complete (object_pairs_hook), so an
+	// error later in the object wins: remember the first duplicate and report
+	// it at the closing brace.
 	seen := map[string]struct{}{}
+	dup, hasDup := "", false
 	p.ws()
 	if c, _ := p.peek(); c == '}' {
 		p.i++
@@ -202,8 +211,8 @@ func (p *parser) object(depth int) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		if _, dup := seen[key]; dup {
-			return Value{}, &ParseError{IsDuplicate: true, DuplicateKey: key}
+		if _, again := seen[key]; again && !hasDup {
+			dup, hasDup = key, true
 		}
 		seen[key] = struct{}{}
 		p.ws()
@@ -223,6 +232,9 @@ func (p *parser) object(depth int) (Value, error) {
 			p.i++
 		case '}':
 			p.i++
+			if hasDup {
+				return Value{}, &ParseError{IsDuplicate: true, DuplicateKey: dup}
+			}
 			return out, nil
 		default:
 			return Value{}, p.err("expected ',' or '}'")
@@ -231,6 +243,9 @@ func (p *parser) object(depth int) (Value, error) {
 }
 
 func (p *parser) array(depth int) (Value, error) {
+	if depth > maxDepth {
+		return Value{}, p.err("nesting too deep")
+	}
 	p.i++
 	out := Value{Kind: Array, Arr: []Value{}}
 	p.ws()
@@ -422,18 +437,17 @@ func (p *parser) number() (Value, error) {
 		}
 		return Value{Kind: Int, Num: lexeme}, nil
 	}
-	// Correctly rounded like Python float(). Out of range yields ±Inf (with
-	// ErrRange), which has no canonical form; the verifier rejects it later.
+	// Correctly rounded like Python float(). A lexeme that overflows to ±Inf
+	// (e.g. 1e400) has no canonical form; lens.py's parse_float hook rejects
+	// it as it rejects NaN (upstream PR #11). Underflow to zero is accepted.
 	f, err := strconv.ParseFloat(lexeme, 64)
-	if err != nil && !isRangeErr(err) {
+	if math.IsInf(f, 0) {
+		return Value{}, &ParseError{NonJSONConst: true}
+	}
+	if err != nil {
 		return Value{}, p.err("invalid number")
 	}
 	return Value{Kind: Float, F: f}, nil
-}
-
-func isRangeErr(err error) bool {
-	ne, ok := err.(*strconv.NumError)
-	return ok && ne.Err == strconv.ErrRange
 }
 
 // writeJSONString writes s as Python json.dumps(..., ensure_ascii=False)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -33,6 +34,31 @@ func requirePython(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not found; differential tests against lens.py skipped")
 	}
+}
+
+// pythonVersion is python3's "major.minor".
+var pythonVersion = sync.OnceValue(func() string {
+	out, err := exec.Command("python3", "-c", "import sys; print('%d.%d' % sys.version_info[:2])").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+})
+
+// cpython313Only are hostile cases whose lens.py report depends on CPython
+// 3.13's json.loads recursion limit (3.12 stops one level earlier). CI runs
+// Python 3.13; elsewhere these cases are skipped, with a note.
+var cpython313Only = map[string]bool{
+	"deep-nesting-9997": true, "deep-nesting-9998": true, "deep-nesting-9998-then-dup-key": true,
+}
+
+func skipOnThisPython(t *testing.T, name string) bool {
+	t.Helper()
+	if cpython313Only[name] && pythonVersion() != "3.13" {
+		t.Logf("%s: skipped, its limit is CPython 3.13's and python3 is %s", name, pythonVersion())
+		return true
+	}
+	return false
 }
 
 // corpus is every published .knobe.md: test vectors (all sets), examples,

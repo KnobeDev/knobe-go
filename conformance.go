@@ -3,7 +3,6 @@ package knobe
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // Schema/spec conformance, following lens.py check_conformance. Errors make
@@ -135,15 +134,11 @@ func strField(p Value, key string) (string, bool) {
 	return v.Str()
 }
 
-// hex64 is lens.py HEX64 (^[0-9a-f]{64}$ via re.match). Python's $ also
-// matches before one trailing "\n", so a hash followed by a newline passes.
+// hex64 is lens.py HEX64 (^[0-9a-f]{64}\Z): exactly 64 lowercase ASCII hex
+// characters with nothing after them, not even a newline (ERRATA E12).
 func hex64(v Value) bool {
 	s, ok := v.Str()
-	if !ok {
-		return false
-	}
-	s = strings.TrimSuffix(s, "\n")
-	if len(s) != 64 {
+	if !ok || len(s) != 64 {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -154,15 +149,18 @@ func hex64(v Value) bool {
 	return true
 }
 
-// isoDateShape is lens.py ISO_DATE (^\d{4}-\d{2}-\d{2}$): \d is any Unicode
-// decimal digit, and $ allows one trailing "\n".
+// isoDateShape is lens.py ISO_DATE (^[0-9]{4}-[0-9]{2}-[0-9]{2}\Z): exactly
+// ten ASCII characters with nothing after them (ERRATA E12).
 func isoDateShape(s string) bool {
-	r := []rune(strings.TrimSuffix(s, "\n"))
-	if len(r) != 10 || r[4] != '-' || r[7] != '-' {
+	if len(s) != 10 {
 		return false
 	}
-	for i, c := range r {
-		if i != 4 && i != 7 && !unicode.IsDigit(c) {
+	for i := 0; i < len(s); i++ {
+		if i == 4 || i == 7 {
+			if s[i] != '-' {
+				return false
+			}
+		} else if s[i] < '0' || s[i] > '9' {
 			return false
 		}
 	}

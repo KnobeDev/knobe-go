@@ -135,7 +135,7 @@ func hostileCases(t *testing.T) []hostileCase {
 	cases := []hostileCase{
 		{"baseline", k(fm, "", obj(""))},
 		{"baseline-with-body", k(fm, body, obj(bh))},
-		// hash-format regexes: Python $ also matches before a final \n
+		// hash formats: ERRATA E12 allows nothing after the 64 hex characters
 		{"payload-hash-trailing-newline", k(fm, "", noHash(objWithout("payload_hash", `"payload_hash":"`+hex+`\n"`)))},
 		{"body-hash-trailing-newline", k(fm, body, obj(`"body_hash":"`+hex+`\n"`))},
 		{"parent-hash-trailing-newline", k(fm, "", obj(`"parents":[{"title":"p","payload_hash":"`+hex+`\n"}]`))},
@@ -149,7 +149,15 @@ func hostileCases(t *testing.T) []hostileCase {
 		{"payload-hash-object", k(fm, "", strings.Replace(obj(""), `"__H__"`, `{"a":[1,"x"]}`, 1))},
 		{"body-hash-null", k(fm, body, obj(`"body_hash":null`))},
 		{"body-hash-number", k(fm, body, obj(`"body_hash":7`))},
-		// created_date
+		// numbers that overflow to infinity are unreadable (upstream PR #11)
+		{"payload-hash-overflow", k(fm, "", strings.Replace(obj(""), `"__H__"`, "1e400", 1))},
+		{"payload-hash-negative-overflow", k(fm, "", strings.Replace(obj(""), `"__H__"`, "-1E999", 1))},
+		{"number-overflow-nested", k(fm, "", obj(`"x":{"y":[1,1.5e309]}`))},
+		{"dup-key-then-overflow", k(fm, "", obj(`"ext":{"a":"1","a":1e400}`))},
+		{"dup-key-then-nan", k(fm, "", obj(`"ext":{"a":"1","a":NaN}`))},
+		{"dup-key-then-syntax-error", k(fm, "", `{"a":"1","a":"2",}`)},
+		{"dup-key-inner-closes-first", k(fm, "", obj(`"a":{"b":"1","b":"2"},"a":"3"`))},
+		// created_date (ERRATA E12: ASCII digits, nothing after)
 		{"date-feb-29-nonleap", k(fm, "", cd(`"2026-02-29"`))},
 		{"date-feb-29-leap", k(fm, "", cd(`"2024-02-29"`))},
 		{"date-year-zero", k(fm, "", cd(`"0000-01-01"`))},
@@ -185,6 +193,10 @@ func hostileCases(t *testing.T) []hostileCase {
 		{"spec-version-null", k(fm, "", objWithout("spec_version", `"spec_version":null`))},
 		{"spec-version-padded", k(fm, "", objWithout("spec_version", `"spec_version":"1.0 "`))},
 		{"spec-version-missing", k(fm, "", objWithout("spec_version", ""))},
+		{"spec-version-list", k(fm, "", objWithout("spec_version", `"spec_version":["1.0"]`))},
+		{"spec-version-object", k(fm, "", objWithout("spec_version", `"spec_version":{"v":"1.0"}`))},
+		{"spec-version-bool", k(fm, "", objWithout("spec_version", `"spec_version":true`))},
+		{"spec-version-long-list", k(fm, "", objWithout("spec_version", `"spec_version":[`+strings.Repeat(`"xxxxxxxx",`, 40)+`"1.0"]`))},
 		// vocabulary
 		{"vocab-custom-bare", k(fm, "", objWithout("content_type", `"content_type":"custom"`))},
 		{"vocab-ext-prefix", k(fm, "", objWithout("content_type", `"content_type":"ext-custom"`))},
@@ -201,6 +213,10 @@ func hostileCases(t *testing.T) []hostileCase {
 		{"nan-constant", k(fm, "", obj(`"x":NaN`))},
 		{"infinity-constant", k(fm, "", obj(`"x":-Infinity`))},
 		{"lone-surrogate-value", k(fm, "", obj(`"x":"\ud800"`))},
+		{"lone-surrogate-key", k(fm, "", obj(`"\udc00":"v"`))},
+		{"lone-surrogate-in-payload-hash", k(fm, "", strings.Replace(obj(""), `"__H__"`, `"\ud800"`, 1))},
+		{"lone-surrogate-and-bad-spec-version", k(fm, "", objWithout("spec_version", `"spec_version":"2.0","a":"\ud800"`))},
+		{"lone-surrogate-and-nfc-collision", k(fm, "", obj("\"caf\u00E9\":\"1\",\"cafe\u0301\":\"2\",\"a\":\"\\ud800\""))},
 		{"surrogate-pair-escape", k(fm, "", obj(`"x":"\ud83d\ude00"`))},
 		{"escapes-mixed", k(fm, "", obj(`"x":"\u0000\u001f\b\f\n\r\t\/\\\"\u007f \u00E9"`))},
 		{"c1-and-del-literal", k(fm, "", obj("\"x\":\"a\u0085b\u009bc\u007fd\""))},
@@ -267,8 +283,14 @@ func hostileCases(t *testing.T) []hostileCase {
 	cases = append(cases,
 		hostileCase{"block-wrapped-lines", raw(fm + blk(wrap(goodB64)))},
 		hostileCase{"block-internal-spaces-tabs", raw(fm + blk(" "+strings.Replace(goodB64, "A", "A \t", 1)+" \t"))},
+		// ERRATA E12: only ASCII space, tab, CR and LF may be stripped
 		hostileCase{"block-internal-unicode-space", raw(fm + blk(goodB64+"\u00A0\u001c"))},
 		hostileCase{"block-internal-zwsp", raw(fm + blk(goodB64+"\u200B"))},
+		hostileCase{"nel-block-whitespace", raw(fm + blk(goodB64[:8]+"\u0085"+goodB64[8:]))},
+		hostileCase{"block-internal-vt-ff", raw(fm + blk(goodB64[:8]+"\v"+goodB64[8:16]+"\f"+goodB64[16:]))},
+		hostileCase{"block-internal-file-separators", raw(fm + blk(goodB64[:8]+"\x1c\x1d\x1e\x1f"+goodB64[8:]))},
+		hostileCase{"block-internal-line-separator", raw(fm + blk(goodB64+"\u2028"))},
+		hostileCase{"block-internal-crlf-wrapped", raw(fm + blk(strings.ReplaceAll(wrap(goodB64), "\n", "\r\n")))},
 		hostileCase{"block-at-byte-zero", raw(BeginMarker + "\n" + goodB64 + "\n" + EndMarker + "\n")},
 		hostileCase{"block-at-byte-zero-with-body-hash", raw(BeginMarker + "\n" + b64(withBH) + "\n" + EndMarker + "\n")},
 		hostileCase{"block-no-end", raw(fm + "\n" + BeginMarker + "\n" + goodB64 + "\n")},
@@ -284,11 +306,32 @@ func hostileCases(t *testing.T) []hostileCase {
 		hostileCase{"b64-bad-alphabet", raw(fm + blk(goodB64[:len(goodB64)-2]+"-_"))},
 		hostileCase{"b64-three-pad", raw(fm + blk("Q==="))},
 		hostileCase{"b64-not-utf8-json", raw(fm + blk(base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe, 0x7b, 0x7d})))},
-		hostileCase{"deep-nesting-996", k(fm, "", obj(`"x":`+strings.Repeat("[", 996)+strings.Repeat("]", 996)))},
+		// Nesting limits: lens.py's _has_lone_surrogate walk stops at 498
+		// levels (499 is a RecursionError, reported as a verifier error with
+		// no blocks); CPython 3.13's json.loads stops at 9997.
+		hostileCase{"deep-nesting-498", k(fm, "", obj(`"x":`+nest(498, "")))},
+		hostileCase{"deep-nesting-499", k(fm, "", obj(`"x":`+nest(499, "")))},
+		hostileCase{"deep-number-leaf-498", k(fm, "", obj(`"x":`+nest(497, "0")))},
+		hostileCase{"deep-number-leaf-499", k(fm, "", obj(`"x":`+nest(498, "0")))},
+		hostileCase{"deep-string-leaf-499", k(fm, "", obj(`"x":`+nest(498, `"s"`)))},
+		hostileCase{"deep-empty-object-498", k(fm, "", obj(`"x":`+nest(497, "{}")))},
+		hostileCase{"deep-object-key-499", k(fm, "", obj(`"x":`+nest(497, `{"k":"v"}`)))},
+		hostileCase{"deep-in-payload-hash", k(fm, "", strings.Replace(obj(""), `"__H__"`, nest(499, ""), 1))},
+		hostileCase{"lone-surrogate-before-deep", k(fm, "", obj(`"a":"\ud800","x":`+nest(499, "")))},
+		hostileCase{"deep-before-lone-surrogate", k(fm, "", obj(`"x":`+nest(499, "")+`,"a":"\ud800"`))},
+		hostileCase{"deep-and-dup-key", k(fm, "", obj(`"x":`+nest(499, "")+`,"x":"1"`))},
+		hostileCase{"deep-nesting-9997", k(fm, "", obj(`"x":`+nest(9997, "")))},
+		hostileCase{"deep-nesting-9998", k(fm, "", obj(`"x":`+nest(9998, "")))},
+		hostileCase{"deep-nesting-9998-then-dup-key", k(fm, "", obj(`"x":`+nest(9998, "")+`,"x":"1"`))},
 		hostileCase{"file-not-utf8", append([]byte(fm), 0xc3, 0x28)},
 		hostileCase{"file-empty", []byte{}},
 	)
 	return cases
+}
+
+// nest wraps inner in n JSON arrays.
+func nest(n int, inner string) string {
+	return strings.Repeat("[", n) + inner + strings.Repeat("]", n)
 }
 
 // flipTrailingBits sets unused low bits in the last data character before
@@ -309,7 +352,13 @@ func TestHostileBatteryMatchesLens(t *testing.T) {
 	protocolDir(t)
 	dir := t.TempDir()
 	cases := hostileCases(t)
+	t.Logf("python3 is %s", pythonVersion())
+	compared := 0
 	for _, c := range cases {
+		if skipOnThisPython(t, c.name) {
+			continue
+		}
+		compared++
 		path := filepath.Join(dir, c.name+".knobe.md")
 		if err := os.WriteFile(path, c.data, 0o644); err != nil {
 			t.Fatal(err)
@@ -323,7 +372,60 @@ func TestHostileBatteryMatchesLens(t *testing.T) {
 			t.Errorf("%s\n  lens: %+v\n  ours: %+v", c.name, py, got)
 		}
 	}
-	t.Logf("compared %d hostile cases", len(cases))
+	t.Logf("compared %d of %d hostile cases", compared, len(cases))
+}
+
+// fullJSONExceptions are files whose complete --json output differs from
+// lens.py by design, with the reason.
+var fullJSONExceptions = map[string]string{
+	// lens.py appends Python's codec error ("'utf-8' codec can't decode byte
+	// 0xc3 in position 39: ..."); knobe-go reports the fact without the detail.
+	"file-not-utf8": "reason text",
+}
+
+// The gate fields above are what upstream's harness compares. This goes
+// further: the complete --json document, including every conformance issue
+// and the unreadable reason, must be byte-identical to lens.py's, so a
+// change to upstream's wording or check order fails here too.
+func TestFullJSONMatchesLens(t *testing.T) {
+	requirePython(t)
+	dir := t.TempDir()
+	var files []string
+	for _, c := range hostileCases(t) {
+		if skipOnThisPython(t, c.name) {
+			continue
+		}
+		path := filepath.Join(dir, c.name+".knobe.md")
+		if err := os.WriteFile(path, c.data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, path)
+	}
+	files = append(files, corpus(t)...)
+	for _, f := range files {
+		name := strings.TrimSuffix(filepath.Base(f), ".knobe.md")
+		out, _ := exec.Command("python3", filepath.Join(protocolDir(t), "lens.py"), "--json", f).Output()
+		want, got := strings.TrimSuffix(string(out), "\n"), VerifyFile(f).JSON()
+		_, excepted := fullJSONExceptions[name]
+		if (want == got) == excepted {
+			t.Errorf("%s (exception listed: %v)\n--- lens.py\n%s\n--- ours\n%s", name, excepted, want, got)
+		}
+	}
+	t.Logf("compared %d files", len(files))
+}
+
+// On the published files (which carry no crafted escapes) the human report
+// is byte-identical to lens.py's too.
+func TestHumanOutputMatchesLensOnPublishedFiles(t *testing.T) {
+	requirePython(t)
+	for _, f := range corpus(t) {
+		out, _ := exec.Command("python3", filepath.Join(protocolDir(t), "lens.py"), f).Output()
+		var b strings.Builder
+		VerifyFile(f).WriteHuman(&b)
+		if string(out) != b.String() {
+			t.Errorf("%s\n--- lens.py\n%s--- ours\n%s", f, out, b.String())
+		}
+	}
 }
 
 // Sanity check that the battery exercises every status.

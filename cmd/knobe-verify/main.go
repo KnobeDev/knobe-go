@@ -49,11 +49,33 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
-	r := knobe.VerifyFile(args[0])
+	r := verifySafely(knobe.VerifyFile, args[0])
 	if asJSON {
 		fmt.Println(r.JSON())
 	} else {
 		r.WriteHuman(os.Stdout)
 	}
 	return r.ExitCode()
+}
+
+const panicReason = "verifier error (panic); rejected"
+
+// verifySafely is the command-line guard lens.py has: hostile input must
+// never end in a stack trace. A panic (which would be a bug in knobe-go) is
+// reported the way lens.py reports an exception from verify(): unreadable,
+// with no blocks and no payload. The panic value goes to stderr, escaped,
+// for a bug report.
+func verifySafely(verify func(string) knobe.Report, path string) (r knobe.Report) {
+	defer func() {
+		if v := recover(); v != nil {
+			fmt.Fprintln(os.Stderr, "knobe-verify: internal error:", knobe.SafeString(fmt.Sprint(v), 300))
+			r = knobe.Report{
+				Status:            knobe.Unreadable,
+				Conformance:       knobe.Invalid,
+				ConformanceIssues: []string{panicReason},
+				Reason:            panicReason,
+			}
+		}
+	}()
+	return verify(path)
 }

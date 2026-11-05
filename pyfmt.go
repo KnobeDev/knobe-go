@@ -177,6 +177,15 @@ func reprStr(s string) string {
 	return b.String()
 }
 
+// pyStr is Python str() of a parsed JSON value: a string as is, anything
+// else as its repr().
+func pyStr(v Value) string {
+	if v.Kind == String {
+		return v.S
+	}
+	return repr(v)
+}
+
 // repr is Python repr() of a parsed JSON value.
 func repr(v Value) string {
 	switch v.Kind {

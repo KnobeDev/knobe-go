@@ -105,9 +105,10 @@ func (r Report) ExitCode() int {
 	return 1
 }
 
-// MaxFileSize bounds what VerifyFile reads. Parsing costs roughly 30 bytes
-// of memory per input byte, so an unbounded hostile file could exhaust a
-// constrained host. Larger files are reported unreadable.
+// MaxFileSize bounds what VerifyFile reads. Verifying an ordinary file costs
+// about 25 bytes of memory per input byte, and a crafted file of many deeply
+// nested arrays far more (about 9 GB at this limit), so an unbounded hostile
+// file could exhaust a constrained host. Larger files are reported unreadable.
 const MaxFileSize = 64 << 20
 
 // VerifyFile reads and verifies a .knobe.md file of at most MaxFileSize
@@ -168,19 +169,20 @@ func verifyText(raw string) Report {
 		rej = admit(payload.Value)
 	}
 	if rej != nil {
-		r := unreadable(rej.reason, n, rej.payload)
+		count := n
+		if rej.noBlocks {
+			count = 0
+		}
+		r := unreadable(rej.reason, count, rej.payload)
 		if rej.issue != "" {
 			r.ConformanceIssues = []string{rej.issue}
 		}
 		return r
 	}
 	p := payload.Value
-	if payload.LoneSurrogate {
-		return unreadable("payload contains characters that cannot be UTF-8 encoded "+
-			"(e.g. an unpaired surrogate); rejected", n, &p)
-	}
 
-	// Canonical hash (spec §5).
+	// Canonical hash (spec §5). The parser rejects non-finite numbers, so
+	// this fails only for a hand-built Value; kept as a guard.
 	computed, err := PayloadHash(p)
 	if err != nil {
 		return unreadable("payload contains a number that cannot be canonicalized "+
@@ -230,6 +232,9 @@ type rejection struct {
 	reason  string
 	payload *Value // kept on the report where lens.py keeps it
 	issue   string // replacement conformance issue, when it differs from reason
+	// noBlocks reports a block count of 0, as lens.py does when verify()
+	// raises and its command line builds the report without the blocks.
+	noBlocks bool
 }
 
 func decodePayload(block string) (ParseResult, *rejection) {
@@ -255,11 +260,19 @@ func decodePayload(block string) (ParseResult, *rejection) {
 	return res, &rejection{reason: "payload could not be decoded or parsed"}
 }
 
-// admit applies the structural gates before hashing: a JSON object, no NFC
-// key collisions, and a spec_version this verifier implements.
+// admit applies the structural gates before hashing, in lens.py's order: a
+// JSON object, no unpaired surrogate (within the nesting lens.py can walk),
+// no NFC key collisions, and a spec_version this verifier implements.
 func admit(p Value) *rejection {
 	if p.Kind != Object {
 		return &rejection{reason: "payload is not a JSON object (got " + typeName(p) + ")"}
+	}
+	switch scanPayload(p) {
+	case scanTooDeep:
+		return &rejection{reason: "verifier error (RecursionError); rejected", noBlocks: true}
+	case scanLoneSurrogate:
+		return &rejection{reason: "payload contains characters that cannot be UTF-8 encoded " +
+			"(e.g. an unpaired surrogate); rejected"}
 	}
 	if c := nfcCollisions(p, ""); len(c) > 0 {
 		if len(c) > 5 {
@@ -270,7 +283,7 @@ func admit(p Value) *rejection {
 	// An unsupported spec_version cannot be honestly verified.
 	if sv, ok := p.Get("spec_version"); ok && sv.Kind != Null {
 		if s, isStr := sv.Str(); !isStr || !contains(supportedSpecVersions, s) {
-			shown := safe(sv)
+			shown := SafeString(pyStr(sv), 300) // lens.py: safe(str(sv))
 			return &rejection{
 				reason:  "unsupported spec_version: " + shown,
 				issue:   "unsupported spec_version: " + shown + " (this verifier supports ['1.0'])",
@@ -279,6 +292,57 @@ func admit(p Value) *rejection {
 		}
 	}
 	return nil
+}
+
+// maxScanLevel is the deepest nesting lens.py's _has_lone_surrogate can walk.
+// It recurses through a generator, so each level costs two CPython frames;
+// with the default recursion limit of 1000 and two frames already in use
+// (the script and verify()), a value or object key nested 499 levels below
+// the payload raises RecursionError.
+const maxScanLevel = 498
+
+type scanResult int
+
+const (
+	scanClean scanResult = iota
+	scanLoneSurrogate
+	scanTooDeep
+)
+
+// scanPayload follows lens.py _has_lone_surrogate: depth first in document
+// order, each object key before its value, stopping at the first string
+// holding an unpaired surrogate or at the first value too deep for CPython
+// to reach, whichever comes first.
+func scanPayload(p Value) scanResult { return scanValue(p, 0) }
+
+func scanValue(v Value, level int) scanResult {
+	if level > maxScanLevel {
+		return scanTooDeep
+	}
+	switch v.Kind {
+	case String:
+		// The parser keeps an unpaired surrogate as WTF-8, the only invalid
+		// UTF-8 a parsed string can hold.
+		if !utf8.ValidString(v.S) {
+			return scanLoneSurrogate
+		}
+	case Array:
+		for _, item := range v.Arr {
+			if r := scanValue(item, level+1); r != scanClean {
+				return r
+			}
+		}
+	case Object:
+		for _, m := range v.Obj {
+			if r := scanValue(Value{Kind: String, S: m.Key}, level+1); r != scanClean {
+				return r
+			}
+			if r := scanValue(m.Val, level+1); r != scanClean {
+				return r
+			}
+		}
+	}
+	return scanClean
 }
 
 func contains(list []string, s string) bool {

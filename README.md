@@ -2,13 +2,13 @@
 
 A KNOBE verifier for Go: an independent verifier for **KNOBE Protocol v1** `.knobe.md` files, written as a sibling of the reference verifier `lens.py` in [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol).
 
-The current release is v0.1.0, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go).
+The current release is v0.1.1, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go). It follows `lens.py` as of knobe-protocol commit `6132595`, which includes ERRATA E12 and upstream's hostile-input hardening (see [Changes in v0.1.1](#changes-in-v011)).
 
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
 
 ## What it does and does not do
 
-knobe-go reads a `.knobe.md` file and reports three independent results from spec §7. **status** (integrity) is `verified`, `verified-body-modified`, `failed` or `unreadable`. **body_verified** (the optional body hash) is `yes`, `modified` or `omitted`. **conformance** (schema compliance) is `valid`, `warnings` or `invalid`. To get these it applies the §5 canonical hash rule and the §6 body normalization, and it rejects as `unreadable` any payload with duplicate keys, keys that collide under NFC, a non-object payload, or an unsupported `spec_version`. Its reports and exit codes match `lens.py` field for field, and every payload-derived string is escaped before it is printed. It does **not** seal, create or transform KNOBE files. It does not check that content is accurate, that attribution is honest, or that a file is fit for any use: a `verified` result only proves the payload is byte-identical to what was sealed. It runs entirely locally and never makes a network request.
+knobe-go reads a `.knobe.md` file and reports three independent results from spec §7. **status** (integrity) is `verified`, `verified-body-modified`, `failed` or `unreadable`. **body_verified** (the optional body hash) is `yes`, `modified` or `omitted`. **conformance** (schema compliance) is `valid`, `warnings` or `invalid`. To get these it applies the §5 canonical hash rule and the §6 body normalization, and it rejects as `unreadable` any payload with duplicate keys, keys that collide under NFC, a number that overflows to infinity, an unpaired surrogate, a non-object payload, or an unsupported `spec_version`. Following ERRATA E12, hash and date formats are ASCII-strict (exactly 64 lowercase hex characters, exactly `YYYY-MM-DD`, nothing after either), and only ASCII space, tab, CR and LF may be stripped from a payload block. Its reports and exit codes match `lens.py` field for field, and every payload-derived string is escaped before it is printed. It does **not** seal, create or transform KNOBE files. It does not check that content is accurate, that attribution is honest, or that a file is fit for any use: a `verified` result only proves the payload is byte-identical to what was sealed. It runs entirely locally and never makes a network request.
 
 ## Install and use
 
@@ -18,7 +18,7 @@ Requires Go 1.22 or later.
 go install github.com/KnobeDev/knobe-go/cmd/knobe-verify@latest
 ```
 
-To install exactly this release rather than the newest one, use `@v0.1.0` in place of `@latest`.
+To install exactly this release rather than the newest one, use `@v0.1.1` in place of `@latest`.
 
 ```bash
 knobe-verify path/to/file.knobe.md
@@ -39,7 +39,7 @@ The human report and the `--json` document have the same layout and keys as `pyt
 ### As a library
 
 ```bash
-go get github.com/KnobeDev/knobe-go@v0.1.0
+go get github.com/KnobeDev/knobe-go@v0.1.1
 ```
 
 ```go
@@ -53,7 +53,7 @@ The full API is on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go)
 
 ## Test vector results
 
-These are the results against the published vectors at knobe-protocol commit `c7ada1f`. Every one matches the expected result in that directory's README. The first nine are the conformance bar.
+These are the results against the published vectors at knobe-protocol commit `6132595`. Every one matches the expected result in that directory's README. The first nine are the conformance bar. ERRATA E12 changed no vector's result.
 
 | file | status | body_verified | conformance | exit |
 |---|---|---|---|---|
@@ -98,26 +98,44 @@ title:             ALERT\x1b[31mINJECTED\x1b[0m\x0astatus:            verified (
 | Test | What it checks |
 |---|---|
 | `vectors_test.go` | All 25 published vectors (core, adversarial, interpretation) against the expected results in their READMEs, plus exit codes and the ERRATA E5/E9 issue text |
-| `parity_test.go` | Runs `lens.py --json` side by side with this verifier over every published `.knobe.md` (75 files) and 123 crafted hostile files. It compares state, conformance, body_verified, computed and stored hash, block count and exit code, the fields upstream's `knobe-core.selftest.mjs` compares. The hostile files are sealed by an independent Python oracle (`testdata/pyhash.py`), never by the code under test. |
-| `unit_test.go` | The JSON parser, Python-compatible float repr and string helpers, Base64 rules, canonical form, body normalization, block and frontmatter parsing, and output escaping |
+| `parity_test.go` | Runs `lens.py` side by side with this verifier over every published `.knobe.md` (75 files) and 156 crafted hostile files. It first compares state, conformance, body_verified, computed and stored hash, block count and exit code, the fields upstream's `knobe-core.selftest.mjs` compares. It then requires the complete `--json` document, every conformance issue and unreadable reason included, to be byte-identical on all 231 files (one listed exception, below), and the human report to be byte-identical on the 75 published files. The hostile files are sealed by an independent Python oracle (`testdata/pyhash.py`), never by the code under test. |
+| `unit_test.go` | The JSON parser, Python-compatible float repr and string helpers, Base64 rules, canonical form, body normalization, block and frontmatter parsing, the lone-surrogate and nesting walk, and output escaping |
+| `cmd/knobe-verify/main_test.go` | The command-line guard that reports an internal error as `unreadable` |
 
-On top of the tests, the human-readable output and the complete `--json` output are byte-identical to `lens.py` on all 75 published files.
+CI runs against upstream `main` on Python 3.13, so an upstream change that breaks parity shows up immediately. The nesting limits below are CPython 3.13's. On another Python version, the three cases that depend on its `json.loads` limit are skipped, with a note in the test log.
 
-CI runs against upstream `main`, so an upstream change that breaks parity shows up immediately.
+## Hostile input
+
+Since upstream PR #11, `lens.py` reports hostile input as `unreadable` instead of crashing, and knobe-go reports exactly what it reports, reason text included:
+
+| Input | Reported as |
+|---|---|
+| A float that overflows to infinity, such as `1e400`, anywhere in the payload, `payload_hash` included | `unreadable`: non-JSON numeric constant |
+| A non-string `spec_version`, such as a list | `unreadable`: unsupported spec_version, shown as Python `str()` shows it |
+| A value or key nested 499 or more levels below the payload | `unreadable`: `verifier error (RecursionError); rejected`, with a block count of 0 |
+| Containers nested more than 9997 levels below the payload | `unreadable`: payload could not be decoded or parsed |
+
+The last two limits come from CPython 3.13. `lens.py`'s lone-surrogate check spends two stack frames per level against Python's 1000-frame limit, and `json.loads` stops at its C recursion limit. knobe-go never crashes on any input. As a last line of defense, as in `lens.py`, `knobe-verify` would report an internal error as `unreadable` (`verifier error (panic); rejected`) rather than print a stack trace.
 
 ## Behavior beyond lens.py
 
-knobe-go reports `unreadable` (exit 2) in a few cases where `lens.py` itself crashes with a Python traceback. It never crashes on any input.
+A file that is not valid UTF-8 is reported as `file is not valid UTF-8`, without the Python codec detail (byte value and position) that `lens.py` appends. This is the one listed exception in the full `--json` comparison.
 
-| Input | lens.py | knobe-go |
-|---|---|---|
-| A float that overflows to infinity, such as `1e400` | Traceback from `json.dumps` | `unreadable` |
-| Nesting deeper than 996 levels | Traceback (`RecursionError`) | `unreadable` |
-| A non-string, non-hashable `spec_version`, such as a list | Traceback (`TypeError`) | `unreadable` (unsupported spec_version) |
-
-`knobe-verify` reads at most 64 MiB (`knobe.MaxFileSize`) and reports a larger file as `unreadable`. Parsing takes about 30 bytes of memory per input byte, and `lens.py` has no limit. Library callers of `VerifyBytes` should bound their input the same way.
+`knobe-verify` reads at most 64 MiB (`knobe.MaxFileSize`) and reports a larger file as `unreadable`. An ordinary file takes about 25 bytes of memory per input byte to verify. A crafted file of many deeply nested arrays takes far more: about 9 GB at the 64 MiB limit, in v0.1.0 as in v0.1.1. `lens.py` takes about 5 GB on the same file and has no size limit. Library callers of `VerifyBytes` should bound their input to what their host can spare.
 
 The human report escapes more than `lens.py` does. It also escapes control characters in `stored_hash` and in conformance issue text, which `lens.py` prints raw, so a crafted key or hash cannot carry terminal escape sequences through them. It also escapes Unicode format characters, such as bidi overrides and isolates (U+202E, U+2066), zero-width characters and U+FEFF, as `\uNNNN`, so a crafted title cannot reorder or hide text in the report. The `--json` output is unchanged and matches `lens.py`.
+
+## Changes in v0.1.1
+
+v0.1.0 predates two upstream changes merged on 2026-11-04, and its tests fail against upstream `main`. v0.1.1 matches them.
+
+- **ERRATA E12, hash format.** A `payload_hash`, `body_hash` or `parents[i].payload_hash` followed by a newline is now `invalid`. v0.1.0 accepted the newline, as Python's `$` did.
+- **ERRATA E12, block whitespace.** Only ASCII space, tab, CR and LF are stripped from a payload block. Any other whitespace, such as NEL (U+0085), NBSP, VT, FF or U+001C to U+001F, makes the file `unreadable`. v0.1.0 stripped everything Python's `str.split()` does.
+- **ERRATA E12, date format.** `created_date` must be ASCII digits with nothing after. Such dates were already `invalid`; the issue now reads "not in YYYY-MM-DD form", as `lens.py`'s does.
+- **Overflowing numbers.** A float such as `1e400` makes the file `unreadable` wherever it appears. In `payload_hash`, v0.1.0 reported `failed` and printed a bare `Infinity` in `--json`, which is not valid JSON.
+- **Check order and nesting.** The lone-surrogate check now runs before the NFC and `spec_version` checks. A duplicate key is reported only if the rest of its object parses, as Python does. Nesting limits follow `lens.py` (see [Hostile input](#hostile-input)).
+- **Command-line guard.** `knobe-verify` reports an internal error as `unreadable` instead of crashing, as `lens.py` now does.
+- **Tests.** The complete `--json` output is now compared with `lens.py` on every published and hostile file, and the human report on every published file.
 
 ## Provenance
 

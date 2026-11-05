@@ -16,9 +16,32 @@ func TestParseRejectsAmbiguousAndIllegalJSON(t *testing.T) {
 	if !errors.As(err, &pe) || !pe.IsDuplicate || pe.DuplicateKey != "c" {
 		t.Errorf("nested duplicate key: %v", err)
 	}
-	for _, in := range []string{"[NaN]", "-Infinity", "Infinity"} {
+	// A float lexeme that overflows to infinity is rejected like NaN, as
+	// lens.py's parse_float hook does (upstream PR #11).
+	for _, in := range []string{"[NaN]", "-Infinity", "Infinity", "1e400", "-1e400", "[1.5e309]", `{"payload_hash":1E999}`} {
 		if _, err := ParseJSON(in); !errors.As(err, &pe) || !pe.NonJSONConst {
 			t.Errorf("%s: want NonJSONConst, got %v", in, err)
+		}
+	}
+	// Python raises the duplicate-key error only when the object closes
+	// (object_pairs_hook), so any error later in that object comes first.
+	for in, want := range map[string]string{
+		`{"a":1,"a":1e400}`:           "nonconst",
+		`{"a":1,"a":NaN}`:             "nonconst",
+		`{"a":1,"a":2,}`:              "syntax",
+		`{"a":{"b":1,"b":2},"a":3}`:   "dup b",
+		`{"a":1,"a":2,"b":3,"b":4}`:   "dup a",
+		`[{"a":1,"a":2},{"b":1,"b"}]`: "dup a",
+	} {
+		_, err := ParseJSON(in)
+		got := "syntax"
+		if errors.As(err, &pe) && pe.NonJSONConst {
+			got = "nonconst"
+		} else if errors.As(err, &pe) && pe.IsDuplicate {
+			got = "dup " + pe.DuplicateKey
+		}
+		if err == nil || got != want {
+			t.Errorf("%s: want %s, got %s (%v)", in, want, got, err)
 		}
 	}
 	for _, in := range []string{"[1,]", "01", "1.", ".5", "-", "\uFEFF{}", "\"a\x01\"", `"\x"`, `"\u12"`,
@@ -48,16 +71,20 @@ func TestParseKeepsBigIntsAndPairsSurrogates(t *testing.T) {
 	if !strings.HasSuffix(res.Value.S, "A") {
 		t.Errorf("escape after lone high surrogate is decoded on its own: %q", res.Value.S)
 	}
-	res, _ = ParseJSON("1e400")
-	if !math.IsInf(res.Value.F, 1) {
-		t.Errorf("1e400 should overflow to +Inf: %+v", res.Value)
+	// Underflow is not overflow: Python's float("1e-400") is 0.0.
+	if res, err := ParseJSON("-1e-400"); err != nil || res.Value.F != 0 || !math.Signbit(res.Value.F) {
+		t.Errorf("-1e-400 should underflow to -0.0: %+v %v", res.Value, err)
 	}
-	nested := func(n int) string { return `{"x":` + strings.Repeat("[", n) + strings.Repeat("]", n) + "}" }
-	if _, err := ParseJSON(nested(996)); err != nil {
-		t.Errorf("996 nested arrays verify in lens.py: %v", err)
+	// CPython 3.13's json.loads accepts containers nested 9997 deep below
+	// the top-level object and raises RecursionError one deeper.
+	nested := func(n int, inner string) string {
+		return `{"x":` + strings.Repeat("[", n) + inner + strings.Repeat("]", n) + "}"
 	}
-	if _, err := ParseJSON(nested(997)); err == nil {
-		t.Error("997 nested arrays must be rejected (lens.py crashes there)")
+	if _, err := ParseJSON(nested(9997, "1")); err != nil {
+		t.Errorf("9997 nested arrays parse in CPython 3.13 json: %v", err)
+	}
+	if _, err := ParseJSON(nested(9997, "[]")); err == nil {
+		t.Error("9998 nested arrays must be rejected (json.loads raises RecursionError)")
 	}
 	if _, err := ParseJSON(strings.Repeat("9", 4300)); err != nil {
 		t.Errorf("4300 digits is within Python's limit: %v", err)
@@ -121,14 +148,17 @@ func TestPythonStringHelpers(t *testing.T) {
 }
 
 func TestDecodeBlockFollowsCPythonValidate(t *testing.T) {
-	ok := map[string]string{"QQ==": "A", "QR==": "A", "": "", " Q\tQ\u00A0=\x1c=\n": "A"}
+	ok := map[string]string{"QQ==": "A", "QR==": "A", "": "", " Q\tQ\r\n=\n=\n": "A"}
 	for in, want := range ok {
 		got, valid := decodeBlock(in)
 		if !valid || string(got) != want {
 			t.Errorf("decodeBlock(%q) = %q, %v", in, got, valid)
 		}
 	}
-	for _, bad := range []string{"QQ=", "QQ", "QQ==QQ==", "=QQ=", "Q===", "QQ-_", "QQ\u200B=="} {
+	// ERRATA E12: only ASCII space, tab, CR and LF may be stripped; any other
+	// whitespace (VT, FF, U+001C-U+001F, NEL, NBSP, ideographic space) is invalid.
+	for _, bad := range []string{"QQ=", "QQ", "QQ==QQ==", "=QQ=", "Q===", "QQ-_", "QQ\u200B==",
+		"QQ\v==", "QQ\f==", "QQ\x1c==", "QQ\u0085==", "QQ\u00A0==", "QQ\u3000==", "QQ==\u2028"} {
 		if _, valid := decodeBlock(bad); valid {
 			t.Errorf("decodeBlock(%q) should fail", bad)
 		}
@@ -152,8 +182,9 @@ func TestCanonicalForm(t *testing.T) {
 	if ha != hb {
 		t.Error("payload hash must ignore payload_hash and normalize to NFC")
 	}
-	inf, _ := ParseJSON(`{"x":1e999}`)
-	if _, err := PayloadHash(inf.Value); err == nil {
+	// ParseJSON never yields one, but a caller can build a Value by hand.
+	inf := Value{Kind: Object, Obj: []Member{{"x", Value{Kind: Float, F: math.Inf(1)}}}}
+	if _, err := PayloadHash(inf); err == nil {
 		t.Error("an infinite float must have no canonical form")
 	}
 }
@@ -213,14 +244,79 @@ func TestFrontmatterHelpers(t *testing.T) {
 func TestConformanceHelpers(t *testing.T) {
 	h := strings.Repeat("a", 64)
 	str := func(s string) Value { return Value{Kind: String, S: s} }
-	if !hex64(str(h)) || !hex64(str(h+"\n")) || hex64(str(h+"\n\n")) || hex64(str(strings.Repeat("A", 64))) {
+	// ERRATA E12: exactly 64 lowercase ASCII hex characters, nothing after.
+	if !hex64(str(h)) || hex64(str(h+"\n")) || hex64(str(h+"\n\n")) || hex64(str(strings.Repeat("A", 64))) ||
+		hex64(str(h[1:]+"\n")) || hex64(str(h+" ")) {
 		t.Error("hex64")
 	}
 	if !isRealISODate("2024-02-29") || isRealISODate("2026-02-29") || isRealISODate("0000-01-01") || isRealISODate("2026-13-01") {
 		t.Error("isRealISODate")
 	}
-	if !isoDateShape("\u0662\u0660\u0662\u0666-01-01") || !isoDateShape("2026-01-01\n") || isoDateShape("2026-1-01") {
+	// ERRATA E12: exactly ten ASCII characters [0-9]{4}-[0-9]{2}-[0-9]{2}.
+	if !isoDateShape("2026-01-01") || !isoDateShape("2026-02-31") || isoDateShape("\u0662\u0660\u0662\u0666-01-01") ||
+		isoDateShape("2026-01-01\n") || isoDateShape("2026-1-01") || isoDateShape("2026-01-1\n") || isoDateShape("2026/01/01") {
 		t.Error("isoDateShape")
+	}
+}
+
+// The walk mirrors lens.py _has_lone_surrogate, which spends two CPython
+// frames per nesting level and so exhausts the 1000-frame recursion limit on
+// any value or key nested 499 levels deep. It stops at whichever comes first
+// in document order: a lone surrogate, or a value too deep to reach.
+func TestScanPayloadFollowsLensWalk(t *testing.T) {
+	deep := func(n int, inner string) string { return strings.Repeat("[", n) + inner + strings.Repeat("]", n) }
+	for in, want := range map[string]scanResult{
+		`{"x":` + deep(498, "") + `}`:                             scanClean,
+		`{"x":` + deep(499, "") + `}`:                             scanTooDeep,
+		`{"x":` + deep(497, "0") + `}`:                            scanClean,
+		`{"x":` + deep(498, "0") + `}`:                            scanTooDeep,
+		`{"x":` + deep(498, `"s"`) + `}`:                          scanTooDeep,
+		`{"x":` + deep(497, "{}") + `}`:                           scanClean,
+		`{"x":` + deep(497, `{"k":null}`) + `}`:                   scanTooDeep,
+		`{"a":"\ud800","x":` + deep(499, "") + `}`:                scanLoneSurrogate,
+		`{"x":` + deep(499, "") + `,"a":"\ud800"}`:                scanTooDeep,
+		`{"\udc00":"v"}`:                                          scanLoneSurrogate,
+		`{"x":[1,{"y":"ok"},"\ud83d\ude00"]}`:                     scanClean,
+		`{"x":["ok",{"y":["\ud800"]}],"z":` + deep(499, "") + `}`: scanLoneSurrogate,
+	} {
+		res, err := ParseJSON(in)
+		if err != nil {
+			t.Fatalf("%.60s: %v", in, err)
+		}
+		if got := scanPayload(res.Value); got != want {
+			t.Errorf("%.60s...: got %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestVerifyReportsHostilePayloadsAsLensDoes(t *testing.T) {
+	file := func(payload string) []byte {
+		return []byte("---\n---\n" + block(payload))
+	}
+	r := VerifyBytes(file(`{"title":"T","payload_hash":1e400}`))
+	if r.Status != Unreadable || r.Stored != nil || r.BlockCount != 1 ||
+		r.Reason != "payload contains a non-JSON numeric constant (NaN/Infinity); rejected" {
+		t.Errorf("overflowing payload_hash: %+v", r)
+	}
+	if strings.Contains(r.JSON(), "Infinity\n") || strings.Contains(r.JSON(), "Infinity,") {
+		t.Errorf("--json must never print a bare Infinity:\n%s", r.JSON())
+	}
+	r = VerifyBytes(file(`{"x":` + strings.Repeat("[", 499) + strings.Repeat("]", 499) + `}`))
+	if r.Status != Unreadable || r.BlockCount != 0 || r.Payload != nil ||
+		r.Reason != "verifier error (RecursionError); rejected" {
+		t.Errorf("payload too deep for lens.py's walk: %+v", r)
+	}
+	// The lone-surrogate check now runs before the NFC and spec_version gates.
+	r = VerifyBytes(file(`{"spec_version":"2.0","a":"\ud800"}`))
+	if r.Status != Unreadable || r.Payload != nil || r.BlockCount != 1 ||
+		r.Reason != "payload contains characters that cannot be UTF-8 encoded (e.g. an unpaired surrogate); rejected" {
+		t.Errorf("lone surrogate before spec_version: %+v", r)
+	}
+	// lens.py shows safe(str(spec_version)): Python str() of the value, escaped and cut at 300.
+	r = VerifyBytes(file(`{"spec_version":["1.0",` + strings.Repeat(`"xxxxxxxx",`, 40) + `"1.0"]}`))
+	if want := "unsupported spec_version: ['1.0', " + strings.Repeat("'xxxxxxxx', ", 24); r.Status != Unreadable ||
+		!strings.HasPrefix(r.Reason, want) || !strings.HasSuffix(r.Reason, "\u2026") {
+		t.Errorf("list spec_version: %q", r.Reason)
 	}
 }
 
