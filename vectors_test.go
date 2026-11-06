@@ -1,54 +1,95 @@
 package knobe
 
 import (
+	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
-// The published test vectors and their expected results, transcribed from
-// test-vectors/README.md, adversarial/README.md and interpretation/README.md.
-// Reproducing the first nine is the bar for "canonically compatible with
-// KNOBE Protocol v1". An empty body means the README leaves it open.
-var expected = []struct {
+// coreNine is the conformance bar: reproducing these nine is what makes a
+// verifier "canonically compatible with KNOBE Protocol v1".
+var coreNine = []string{
+	"minimal-valid.knobe.md", "full-valid.knobe.md", "body-modified.knobe.md",
+	"payload-modified.knobe.md", "unreadable.knobe.md", "unicode-valid.knobe.md",
+	"numeric-violation.knobe.md", "omitted-body-hash.knobe.md", "multi-block.knobe.md",
+}
+
+// expectation is one row of a published expected-results table. file is
+// relative to test-vectors/, with forward slashes. body is "" where the table
+// has no body_verified column (the core nine) and "—" for the omitted that
+// unreadable files report.
+type expectation struct {
 	file, status, body, conformance string
-}{
-	// Core six + additional three (the conformance bar)
-	{"minimal-valid.knobe.md", "verified", "", "valid"},
-	{"full-valid.knobe.md", "verified", "", "valid"},
-	{"body-modified.knobe.md", "verified-body-modified", "modified", "valid"},
-	{"payload-modified.knobe.md", "failed", "", "valid"},
-	{"unreadable.knobe.md", "unreadable", "", "invalid"},
-	{"unicode-valid.knobe.md", "verified", "", "valid"},
-	{"numeric-violation.knobe.md", "verified", "", "invalid"},
-	{"omitted-body-hash.knobe.md", "verified", "omitted", "valid"},
-	{"multi-block.knobe.md", "verified", "omitted", "warnings"},
-	// Adversarial hardening set
-	{"adversarial/bad-attribution-sources-type.knobe.md", "verified", "omitted", "invalid"},
-	{"adversarial/bad-body-hash-format.knobe.md", "verified-body-modified", "modified", "invalid"},
-	{"adversarial/bad-created-date.knobe.md", "verified", "omitted", "invalid"},
-	{"adversarial/control-character-title.knobe.md", "verified", "omitted", "valid"},
-	{"adversarial/duplicate-key.knobe.md", "unreadable", "", "invalid"},
-	{"adversarial/multi-block-warning.knobe.md", "verified", "omitted", "warnings"},
-	{"adversarial/nfc-key-collision.knobe.md", "unreadable", "", "invalid"},
-	{"adversarial/no-frontmatter-valid-payload.knobe.md", "verified", "omitted", "invalid"},
-	{"adversarial/payload-array.knobe.md", "unreadable", "", "invalid"},
-	{"adversarial/unsupported-spec-version.knobe.md", "unreadable", "", "invalid"},
-	// Interpretation set (ERRATA rulings)
-	{"interpretation/astral-unicode-literal.knobe.md", "verified", "omitted", "valid"},
-	{"interpretation/attribution-missing.knobe.md", "verified", "omitted", "invalid"},
-	{"interpretation/base64-unpadded.knobe.md", "unreadable", "", "invalid"},
-	{"interpretation/begin-marker-mid-line.knobe.md", "verified", "yes", "valid"},
-	{"interpretation/boolean-null-values.knobe.md", "verified", "omitted", "valid"},
-	{"interpretation/spec-version-frontmatter-mismatch.knobe.md", "verified", "omitted", "warnings"},
+}
+
+var tableRow = regexp.MustCompile("^\\|\\s*`([^`]+\\.knobe\\.md)`\\s*\\|(.*)$")
+
+// publishedExpected reads the expected results from the tables in
+// test-vectors/README.md, adversarial/README.md and interpretation/README.md
+// of the protocol checkout. Reading them, rather than a copy, means a vector
+// published upstream is checked against its published result on the next run.
+func publishedExpected(t *testing.T) []expectation {
+	t.Helper()
+	root := filepath.Join(protocolDir(t), "test-vectors")
+	var out []expectation
+	for _, set := range []struct {
+		dir     string
+		hasBody bool
+	}{{"", false}, {"adversarial", true}, {"interpretation", true}} {
+		data, err := os.ReadFile(filepath.Join(root, set.dir, "README.md"))
+		if err != nil {
+			t.Fatalf("expected results: %v", err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			m := tableRow.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			// "verified (last block)" and "valid (where readable)" keep the first word.
+			var cells []string
+			for _, c := range strings.Split(m[2], "|") {
+				if f := strings.Fields(c); len(f) > 0 {
+					cells = append(cells, f[0])
+				} else {
+					cells = append(cells, "")
+				}
+			}
+			e := expectation{file: path.Join(set.dir, m[1])}
+			switch {
+			case set.hasBody && len(cells) >= 3:
+				e.status, e.body, e.conformance = cells[0], cells[1], cells[2]
+			case !set.hasBody && len(cells) >= 2:
+				e.status, e.conformance = cells[0], cells[1]
+			default:
+				t.Fatalf("%s: cannot read the expected-results row %q", filepath.Join(set.dir, "README.md"), line)
+			}
+			if e.status == "" || e.conformance == "" || (set.hasBody && e.body == "") {
+				t.Fatalf("%s: blank cell in the expected-results row %q", filepath.Join(set.dir, "README.md"), line)
+			}
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func TestPublishedVectors(t *testing.T) {
 	dir := filepath.Join(protocolDir(t), "test-vectors")
-	for _, want := range expected {
+	rows := publishedExpected(t)
+	listed := map[string]bool{}
+	for _, want := range rows {
+		listed[want.file] = true
 		t.Run(want.file, func(t *testing.T) {
-			r := VerifyFile(filepath.Join(dir, want.file))
-			if string(r.Status) != want.status || string(r.Conformance) != want.conformance ||
-				(want.body != "" && string(r.BodyVerified) != want.body) {
+			p := filepath.Join(dir, filepath.FromSlash(want.file))
+			if _, err := os.Stat(p); err != nil {
+				t.Fatalf("listed in the README but missing: %v", err)
+			}
+			r := VerifyFile(p)
+			body := string(r.BodyVerified)
+			bodyOK := want.body == "" || body == want.body || (want.body == "—" && body == "")
+			if string(r.Status) != want.status || string(r.Conformance) != want.conformance || !bodyOK {
 				t.Errorf("want %s/%q/%s, got %s/%q/%s (%q)", want.status, want.body, want.conformance,
 					r.Status, r.BodyVerified, r.Conformance, r.ConformanceIssues)
 			}
@@ -57,6 +98,25 @@ func TestPublishedVectors(t *testing.T) {
 			}
 		})
 	}
+	for _, f := range coreNine {
+		if !listed[f] {
+			t.Errorf("the README tables do not list the core vector %s", f)
+		}
+	}
+	// Every published vector must have a published expected result.
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			t.Errorf("cannot list %s: %v", p, err)
+			return nil
+		}
+		if !d.IsDir() && strings.HasSuffix(p, ".knobe.md") {
+			rel, _ := filepath.Rel(dir, p)
+			if !listed[filepath.ToSlash(rel)] {
+				t.Errorf("%s has no expected result in the test-vectors READMEs", filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
 }
 
 func TestVectorExitCodes(t *testing.T) {
