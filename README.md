@@ -1,6 +1,6 @@
 # knobe-go
 
-A KNOBE verifier for Go: an independent verifier for **KNOBE Protocol v1** `.knobe.md` files, written as a sibling of the reference verifier `lens.py` in [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol).
+A KNOBE verifier for Go: it verifies **KNOBE Protocol v1** `.knobe.md` files and is written as a sibling of the reference verifier `lens.py` in [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol).
 
 The current release is v0.1.2, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go). It follows `lens.py` as of knobe-protocol commit `fd75d2d`, which includes ERRATA E12, upstream's hostile-input hardening and the display patch series merged as upstream PR #19 (see [Changes in v0.1.2](#changes-in-v012)).
 
@@ -166,10 +166,10 @@ v0.1.0 predates two upstream changes merged on 2026-11-04, and its tests fail ag
 
 ## Provenance
 
-knobe-go is maintained by Joshua Hori (KnobeDev). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
+knobe-go is maintained by Joshua Hori (KnobeDev). It does not count toward the two-independent-implementations trigger in the protocol's [GOVERNANCE.md](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md#transition-to-shared-governance). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
 
 It was written with AI assistance (Claude) at the maintainer's direction. As the steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) ask, the reliance on the reference engines is disclosed here: `lens.py` was consulted throughout, along with the maintainer's Rust port, [knobe-rs](https://github.com/KnobeDev/knobe-rs) (on crates.io as [`knobe`](https://crates.io/crates/knobe)), which follows the same reference. Every ambiguous case was settled by observing `lens.py` and is pinned by the parity tests above.
 
 ## License
 
-Apache-2.0, matching the upstream verifier code. This is an independent implementation: it shares no code with upstream but follows the behavior of `lens.py`. See [NOTICE](NOTICE).
+Apache-2.0, matching the upstream verifier code. knobe-go shares no code with upstream but follows the behavior of `lens.py`. See [NOTICE](NOTICE).
