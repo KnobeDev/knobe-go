@@ -2,7 +2,7 @@
 
 A KNOBE verifier for Go: it verifies **KNOBE Protocol v1** `.knobe.md` files and is written as a sibling of the reference verifier `lens.py` in [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol).
 
-The current release is v0.1.2, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go). It follows `lens.py` as of knobe-protocol commit `6132595`, which includes ERRATA E12 and upstream's hostile-input hardening. How it prints hostile text follows a patch series proposed to KnobeOne/knobe-protocol and not yet merged (see [Changes in v0.1.2](#changes-in-v012)).
+The current release is v0.1.2, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go). It follows `lens.py` as of knobe-protocol commit `fd75d2d`, which includes ERRATA E12, upstream's hostile-input hardening and the display patch series merged as upstream PR #19 (see [Changes in v0.1.2](#changes-in-v012)).
 
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
 
@@ -53,7 +53,7 @@ The full API is on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go)
 
 ## Test vector results
 
-These are the results against the published vectors at knobe-protocol commit `6132595`. Every one matches the expected result in that directory's README. The first nine are the conformance bar. ERRATA E12 changed no vector's result.
+These are the results against the 33 published vectors at knobe-protocol commit `fd75d2d`. Every one matches the expected result in that directory's README. The first nine are the conformance bar. ERRATA E12 changed no vector's result.
 
 | file | status | body_verified | conformance | exit |
 |---|---|---|---|---|
@@ -69,18 +69,26 @@ These are the results against the published vectors at knobe-protocol commit `61
 | `adversarial/bad-attribution-sources-type.knobe.md` | verified | omitted | invalid | 1 |
 | `adversarial/bad-body-hash-format.knobe.md` | verified-body-modified | modified | invalid | 1 |
 | `adversarial/bad-created-date.knobe.md` | verified | omitted | invalid | 1 |
+| `adversarial/bidi-title.knobe.md` | failed | omitted | invalid | 1 |
+| `adversarial/bigint-payload.knobe.md` | failed | omitted | invalid | 1 |
 | `adversarial/control-character-title.knobe.md` | verified | omitted | valid | 0 |
 | `adversarial/duplicate-key.knobe.md` | unreadable | omitted (null) | invalid | 2 |
+| `adversarial/float-overflow.knobe.md` | unreadable | omitted (null) | invalid | 2 |
+| `adversarial/lone-surrogate.knobe.md` | unreadable | omitted (null) | invalid | 2 |
 | `adversarial/multi-block-warning.knobe.md` | verified | omitted | warnings | 0 |
+| `adversarial/nested-payload-hash.knobe.md` | verified | omitted | valid | 0 |
 | `adversarial/nfc-key-collision.knobe.md` | unreadable | omitted (null) | invalid | 2 |
 | `adversarial/no-frontmatter-valid-payload.knobe.md` | verified | omitted | invalid | 1 |
+| `adversarial/null-payload-hash.knobe.md` | failed | omitted | invalid | 1 |
 | `adversarial/payload-array.knobe.md` | unreadable | omitted (null) | invalid | 2 |
+| `adversarial/spec-version-array.knobe.md` | unreadable | omitted (null) | invalid | 2 |
 | `adversarial/unsupported-spec-version.knobe.md` | unreadable | omitted (null) | invalid | 2 |
 | `interpretation/astral-unicode-literal.knobe.md` | verified | omitted | valid | 0 |
 | `interpretation/attribution-missing.knobe.md` | verified | omitted | invalid | 1 |
 | `interpretation/base64-unpadded.knobe.md` | unreadable | omitted (null) | invalid | 2 |
 | `interpretation/begin-marker-mid-line.knobe.md` | verified | yes | valid | 0 |
 | `interpretation/boolean-null-values.knobe.md` | verified | omitted | valid | 0 |
+| `interpretation/nel-block-whitespace.knobe.md` | unreadable | omitted (null) | invalid | 2 |
 | `interpretation/spec-version-frontmatter-mismatch.knobe.md` | verified | omitted | warnings | 0 |
 
 For an unreadable file, `--json` prints `body_verified` as `null`, as `lens.py` does. ERRATA E11 accepts either `null` or `omitted`.
@@ -97,8 +105,8 @@ title:             ALERT\x1b[31mINJECTED\x1b[0m\x0astatus:            verified (
 
 | Test | What it checks |
 |---|---|
-| `vectors_test.go` | All 25 published vectors (core, adversarial, interpretation) against the expected results in their READMEs, plus exit codes and the ERRATA E5/E9 issue text |
-| `parity_test.go` | Runs `lens.py` side by side with this verifier over every published `.knobe.md` (75 files) and 214 crafted hostile files. It first compares state, conformance, body_verified, computed and stored hash, block count and exit code, the fields upstream's `knobe-core.selftest.mjs` compares. It then requires the complete `--json` document, every conformance issue and unreadable reason included, and the human report with its exit code, to be byte-identical on all 289 files. The hostile files are sealed by an independent Python oracle (`testdata/pyhash.py`), never by the code under test. |
+| `vectors_test.go` | All 33 published vectors (core, adversarial, interpretation) against the expected results in their READMEs, plus exit codes and the ERRATA E5/E9 issue text |
+| `parity_test.go` | Runs `lens.py` side by side with this verifier over every published `.knobe.md` (91 files) and 214 crafted hostile files. It first compares state, conformance, body_verified, computed and stored hash, block count and exit code, the fields upstream's `knobe-core.selftest.mjs` compares. It then requires the complete `--json` document, every conformance issue and unreadable reason included, and the human report with its exit code, to be byte-identical on all 305 files. The hostile files are sealed by an independent Python oracle (`testdata/pyhash.py`), never by the code under test. |
 | `display_test.go` | The display rules: `SafeString`'s exact escape set and truncation, duplicate keys holding surrogates, Python `repr()` (checked against `str.isprintable()` on every code point), the UTF-8 error text, file names and `OSError` text, and the human report fields |
 | `unit_test.go` | The JSON parser, Python-compatible float repr and string helpers, Base64 rules, canonical form, body normalization, block and frontmatter parsing, and the lone-surrogate and nesting walk |
 | `cmd/knobe-verify/paths_unix_test.go` | File names holding `0xFF`, ESC, U+202E or a quote, for a missing file, a valid file, a directory, an unreadable file and a path through a file: `knobe-verify` must print what `lens.py` prints, `--json` and human, exit code included, and the reasons must read as specified |
@@ -106,7 +114,7 @@ title:             ALERT\x1b[31mINJECTED\x1b[0m\x0astatus:            verified (
 
 CI runs against upstream `main` on Python 3.13, so an upstream change that breaks parity shows up immediately. The nesting limits below are CPython 3.13's. On another Python version, the seventeen cases that depend on its `json.loads` limits are skipped, with a note in the test log.
 
-Upstream `main` does not have the display patch series yet (see [Changes in v0.1.2](#changes-in-v012)). The tests check once whether the `lens.py` under test has it. If it does, every file and path must match byte for byte. If it does not, a listed set of cases, each with its reason, must differ (an unpatched `lens.py` crashes on some of them), and every other case must match. The test log says which mode ran. Once upstream merges the series, the listed cases must match like the rest.
+Upstream merged the display patch series as PR #19 (see [Changes in v0.1.2](#changes-in-v012)). The tests check once whether the `lens.py` under test has it. If it does, every file and path must match byte for byte. If it does not, as in a checkout from before PR #19, a listed set of cases, each with its reason, must differ (an unpatched `lens.py` crashes on some of them), and every other case must match. The test log says which mode ran.
 
 ## Hostile input
 
@@ -131,11 +139,11 @@ knobe-go never crashes on any input. As a last line of defense, as in `lens.py`,
 
 `knobe-verify` reads at most 64 MiB (`knobe.MaxFileSize`) and reports a larger file as `unreadable`. An ordinary file takes about 25 bytes of memory per input byte to verify. A crafted file of many deeply nested arrays takes far more: about 9 GB at the 64 MiB limit, in v0.1.0 as in v0.1.1. `lens.py` takes about 5 GB on the same file and has no size limit. Library callers of `VerifyBytes` should bound their input to what their host can spare.
 
-Until upstream merges the display patch series, knobe-go's output differs from `lens.py` on `main` where hostile text is shown: a duplicate key, `spec_version`, title or `privacy_level` holding a bidi control or U+2028/U+2029, a `stored_hash` or conformance issue holding a control character, a long `stored_hash`, and the name of a missing file or a directory. Where `lens.py` on `main` crashes printing a report (a duplicate key holding an unpaired surrogate, or a file name that is not UTF-8), knobe-go prints the report. Otherwise verdicts and exit codes are the same.
+Against a `lens.py` from before the display patch series (upstream PR #19), knobe-go's output differs where hostile text is shown: a duplicate key, `spec_version`, title or `privacy_level` holding a bidi control or U+2028/U+2029, a `stored_hash` or conformance issue holding a control character, a long `stored_hash`, and the name of a missing file or a directory. Where that `lens.py` crashes printing a report (a duplicate key holding an unpaired surrogate, or a file name that is not UTF-8), knobe-go prints the report. Otherwise verdicts and exit codes are the same.
 
 ## Changes in v0.1.2
 
-v0.1.2 follows a common display contract for KNOBE verifiers. It is the one in the patch series proposed to KnobeOne/knobe-protocol ("Never crash printing a report; escape the same characters in lens.py and knobe-core.js"), which is not yet merged. knobe-rs follows it too. No verdict or exit code changes.
+v0.1.2 follows a common display contract for KNOBE verifiers. It is the one in the patch series proposed to KnobeOne/knobe-protocol ("Never crash printing a report; escape the same characters in lens.py and knobe-core.js"), which upstream has since merged as PR #19. knobe-rs follows it too. No verdict or exit code changes.
 
 - **Escaping.** Hostile text is escaped by an exact set of characters (see [Hostile input](#hostile-input)). v0.1.1 escaped every Unicode format character, zero-width characters and U+FEFF included, and showed an unpaired surrogate in a duplicate key as U+FFFD.
 - **Human report.** `stored_hash`, and a non-string `spec_version`, `quarantine_status` or `privacy_level`, are shown as Python `str()` shows the value, escaped and cut at 300 characters. v0.1.1 printed them whole.
