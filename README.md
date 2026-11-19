@@ -2,7 +2,7 @@
 
 A KNOBE verifier for Go: it verifies **KNOBE Protocol v1** `.knobe.md` files and is written as a sibling of the reference verifier `lens.py` in [KnobeOne/knobe-protocol](https://github.com/KnobeOne/knobe-protocol).
 
-The current release is v0.1.2, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go). It follows `lens.py` as of knobe-protocol commit `fd75d2d`, which includes ERRATA E12, upstream's hostile-input hardening and the display patch series merged as upstream PR #19 (see [Changes in v0.1.2](#changes-in-v012)).
+The current release is v0.1.3, with API documentation on [pkg.go.dev](https://pkg.go.dev/github.com/KnobeDev/knobe-go). It follows `lens.py` as of knobe-protocol commit `fd75d2d`, which includes ERRATA E12, upstream's hostile-input hardening and the display patch series merged as upstream PR #19 (see [Changes in v0.1.2](#changes-in-v012)).
 
 > A match proves integrity, not truth. A `valid` proves conformance, not truth. Inspect before trusting.
 
@@ -18,7 +18,7 @@ Requires Go 1.22 or later.
 go install github.com/KnobeDev/knobe-go/cmd/knobe-verify@latest
 ```
 
-To install exactly this release rather than the newest one, use `@v0.1.2` in place of `@latest`.
+To install exactly this release rather than the newest one, use `@v0.1.3` in place of `@latest`.
 
 ```bash
 knobe-verify path/to/file.knobe.md
@@ -39,7 +39,7 @@ The human report and the `--json` document have the same layout and keys as `pyt
 ### As a library
 
 ```bash
-go get github.com/KnobeDev/knobe-go@v0.1.2
+go get github.com/KnobeDev/knobe-go@v0.1.3
 ```
 
 ```go
@@ -140,6 +140,13 @@ knobe-go never crashes on any input. As a last line of defense, as in `lens.py`,
 `knobe-verify` reads at most 64 MiB (`knobe.MaxFileSize`) and reports a larger file as `unreadable`. An ordinary file takes about 25 bytes of memory per input byte to verify. A crafted file of many deeply nested arrays takes far more: about 9 GB at the 64 MiB limit, in v0.1.0 as in v0.1.1. `lens.py` takes about 5 GB on the same file and has no size limit. Library callers of `VerifyBytes` should bound their input to what their host can spare.
 
 Against a `lens.py` from before the display patch series (upstream PR #19), knobe-go's output differs where hostile text is shown: a duplicate key, `spec_version`, title or `privacy_level` holding a bidi control or U+2028/U+2029, a `stored_hash` or conformance issue holding a control character, a long `stored_hash`, and the name of a missing file or a directory. Where that `lens.py` crashes printing a report (a duplicate key holding an unpaired surrogate, or a file name that is not UTF-8), knobe-go prints the report. Otherwise verdicts and exit codes are the same.
+
+## Changes in v0.1.3
+
+v0.1.3 changes no code: the library and `knobe-verify` behave exactly as in v0.1.2. It brings the tests and documentation up to date with upstream.
+
+- **Tests.** `vectors_test.go` finds the vector tables' columns by their headers, so it reads the `body_verified` column upstream added to the core table (upstream PR #30), and it checks `body_verified` for every vector that lists it. All 33 published vectors at knobe-protocol `fd75d2d` pass, and the `lens.py` comparison matches on all 305 files.
+- **Wording.** The README and NOTICE no longer call knobe-go "independent", and the Provenance section carries the steward's provenance line.
 
 ## Changes in v0.1.2
 
