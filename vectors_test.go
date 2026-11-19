@@ -4,7 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -18,61 +18,147 @@ var coreNine = []string{
 }
 
 // expectation is one row of a published expected-results table. file is
-// relative to test-vectors/, with forward slashes. body is "" where the table
-// has no body_verified column (the core nine) and "—" for the omitted that
-// unreadable files report.
+// relative to test-vectors/, with forward slashes. body is "—" for the
+// omitted that unreadable files report.
 type expectation struct {
 	file, status, body, conformance string
 }
 
-var tableRow = regexp.MustCompile("^\\|\\s*`([^`]+\\.knobe\\.md)`\\s*\\|(.*)$")
+// tableCells returns the cells of a Markdown table row, split on unescaped
+// pipes, and false for a line that is not a table row.
+func tableCells(line string) ([]string, bool) {
+	row, ok := strings.CutPrefix(strings.TrimSpace(line), "|")
+	if !ok {
+		return nil, false
+	}
+	cells := []string{}
+	start, escaped := 0, false
+	for i, c := range row {
+		switch {
+		case escaped: // the character after a backslash is literal, `\|` included
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case c == '|':
+			cells = append(cells, strings.TrimSpace(row[start:i]))
+			start = i + 1
+		}
+	}
+	if last := strings.TrimSpace(row[start:]); last != "" {
+		cells = append(cells, last) // a row without a closing pipe
+	}
+	return cells, true
+}
+
+// column is the index of the header cell name or "expected <name>", ignoring
+// case, or -1.
+func column(header []string, name string) int {
+	for i, h := range header {
+		if h = strings.ToLower(h); h == name || h == "expected "+name {
+			return i
+		}
+	}
+	return -1
+}
+
+// vectorName is the file a row's first cell names in backticks, if it is a
+// .knobe.md file.
+func vectorName(cell string) (string, bool) {
+	name, ok := strings.CutPrefix(cell, "`")
+	if !ok {
+		return "", false
+	}
+	name, ok = strings.CutSuffix(name, "`")
+	return name, ok && strings.HasSuffix(name, ".knobe.md")
+}
 
 // publishedExpected reads the expected results from the tables in
 // test-vectors/README.md, adversarial/README.md and interpretation/README.md
 // of the protocol checkout. Reading them, rather than a copy, means a vector
 // published upstream is checked against its published result on the next run.
+//
+// The status, body_verified and conformance columns are found by their
+// header, which every table has had since knobe-protocol PR #30 (merged as
+// 02ad723). A table starts at its header row (a first cell of "file", or the
+// first row after a non-table line) and ends at the next non-table line or
+// header row.
 func publishedExpected(t *testing.T) []expectation {
 	t.Helper()
 	root := filepath.Join(protocolDir(t), "test-vectors")
 	var out []expectation
-	for _, set := range []struct {
-		dir     string
-		hasBody bool
-	}{{"", false}, {"adversarial", true}, {"interpretation", true}} {
-		data, err := os.ReadFile(filepath.Join(root, set.dir, "README.md"))
+	for _, dir := range []string{"", "adversarial", "interpretation"} {
+		readme := filepath.Join(dir, "README.md")
+		data, err := os.ReadFile(filepath.Join(root, readme))
 		if err != nil {
 			t.Fatalf("expected results: %v", err)
 		}
+		var header []string
+		inTable := false
 		for _, line := range strings.Split(string(data), "\n") {
-			m := tableRow.FindStringSubmatch(line)
-			if m == nil {
+			cells, ok := tableCells(line)
+			if !ok {
+				inTable = false
 				continue
 			}
-			// "verified (last block)" and "valid (where readable)" keep the first word.
-			var cells []string
-			for _, c := range strings.Split(m[2], "|") {
-				if f := strings.Fields(c); len(f) > 0 {
-					cells = append(cells, f[0])
-				} else {
-					cells = append(cells, "")
+			if !inTable || (len(cells) > 0 && strings.EqualFold(cells[0], "file")) {
+				header, inTable = cells, true
+				continue
+			}
+			if len(cells) == 0 {
+				continue
+			}
+			file, ok := vectorName(cells[0])
+			if !ok {
+				continue // the separator row, or a row that names no vector
+			}
+			if len(cells) != len(header) {
+				t.Fatalf("%s: row has %d cells, header %d: %q", readme, len(cells), len(header), line)
+			}
+			at := func(name string) string {
+				i := column(header, name)
+				if i < 0 {
+					t.Fatalf("%s: the table listing %s has no %s column (upstream added body_verified "+
+						"to every table in PR #30; use a checkout at 02ad723 or later)", readme, file, name)
 				}
+				// "verified (last block)" and "valid (where readable)" keep the first word.
+				f := strings.Fields(cells[i])
+				if len(f) == 0 {
+					t.Fatalf("%s: blank %s cell in the row %q", readme, name, line)
+				}
+				return f[0]
 			}
-			e := expectation{file: path.Join(set.dir, m[1])}
-			switch {
-			case set.hasBody && len(cells) >= 3:
-				e.status, e.body, e.conformance = cells[0], cells[1], cells[2]
-			case !set.hasBody && len(cells) >= 2:
-				e.status, e.conformance = cells[0], cells[1]
-			default:
-				t.Fatalf("%s: cannot read the expected-results row %q", filepath.Join(set.dir, "README.md"), line)
-			}
-			if e.status == "" || e.conformance == "" || (set.hasBody && e.body == "") {
-				t.Fatalf("%s: blank cell in the expected-results row %q", filepath.Join(set.dir, "README.md"), line)
-			}
-			out = append(out, e)
+			out = append(out, expectation{
+				file:        path.Join(dir, file),
+				status:      at("status"),
+				body:        at("body_verified"),
+				conformance: at("conformance"),
+			})
 		}
 	}
 	return out
+}
+
+func TestTableCells(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want []string
+	}{
+		{"| `a.knobe.md` | verified | — | invalid |", []string{"`a.knobe.md`", "verified", "—", "invalid"}},
+		{"  | file | expected status |  ", []string{"file", "expected status"}},
+		{`| x | a \| b | c`, []string{"x", `a \| b`, "c"}},
+		{"|---|---|", []string{"---", "---"}},
+	} {
+		if got, ok := tableCells(tc.line); !ok || !slices.Equal(got, tc.want) {
+			t.Errorf("tableCells(%q) = %q, %v; want %q", tc.line, got, ok, tc.want)
+		}
+	}
+	if _, ok := tableCells("not a table | row"); ok {
+		t.Error("a line that does not start with a pipe is not a table row")
+	}
+	header := []string{"file", "Expected Status", "body_verified", "notes"}
+	if column(header, "status") != 1 || column(header, "body_verified") != 2 || column(header, "conformance") != -1 {
+		t.Errorf("column lookup in %q", header)
+	}
 }
 
 func TestPublishedVectors(t *testing.T) {
@@ -88,7 +174,10 @@ func TestPublishedVectors(t *testing.T) {
 			}
 			r := VerifyFile(p)
 			body := string(r.BodyVerified)
-			bodyOK := want.body == "" || body == want.body || (want.body == "—" && body == "")
+			bodyOK := body == want.body
+			if want.body == "—" {
+				bodyOK = body == ""
+			}
 			if string(r.Status) != want.status || string(r.Conformance) != want.conformance || !bodyOK {
 				t.Errorf("want %s/%q/%s, got %s/%q/%s (%q)", want.status, want.body, want.conformance,
 					r.Status, r.BodyVerified, r.Conformance, r.ConformanceIssues)
