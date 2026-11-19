@@ -158,7 +158,7 @@ v0.1.0 predates two upstream changes merged on 2026-11-04, and its tests fail ag
 
 ## Provenance
 
-knobe-go is maintained by Joshua Hori (KnobeDev), the KNOBE project's technical lead, and was built inside the project. It does not count toward the two-independent-implementations trigger in the protocol's [GOVERNANCE.md](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md#transition-to-shared-governance). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
+knobe-go is maintained by Joshua Hori (KnobeDev). It does not count toward the two-independent-implementations trigger in the protocol's [GOVERNANCE.md](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md#transition-to-shared-governance). It is not an official or reference KNOBE implementation, and the KNOBE steward did not build, review or endorse it.
 
 It was written with AI assistance (Claude) at the maintainer's direction. As the steward's [governance notes](https://github.com/KnobeOne/knobe-protocol/blob/main/GOVERNANCE.md) ask, the reliance on the reference engines is disclosed here: `lens.py` was consulted throughout, along with the maintainer's Rust port, [knobe-rs](https://github.com/KnobeDev/knobe-rs) (on crates.io as [`knobe`](https://crates.io/crates/knobe)), which follows the same reference. Every ambiguous case was settled by observing `lens.py` and is pinned by the parity tests above.
 
